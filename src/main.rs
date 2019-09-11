@@ -100,7 +100,7 @@ fn parse_expr(i: Span) -> IResult<Span, SpanExpr> {
                 tuple((parse_expr_minus, parse_op, parse_expr)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
-            map( // Parses unit - unit (bin op) expr
+            map( // Parses unit - unit - expr
                 tuple((parse_expr_minus, parse_expr)),
                 |(l, r)| (i, Expr::BinOp(Box::new(l), parse_add(Span::new("+")).unwrap().1, Box::new(r))),
             ),
