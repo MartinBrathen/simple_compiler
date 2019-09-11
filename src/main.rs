@@ -76,6 +76,7 @@ pub enum Expr<'a> {
 
 type SpanExpr<'a> = (Span<'a>, Expr<'a>);
 
+// Parses Span/string into i32
 pub fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         map(digit1, |digit_str: Span| {
@@ -87,55 +88,63 @@ pub fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
     )(i)
 }
 
+// Parses arithmetic expressions
 fn parse_expr(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         alt((
-            map( // Parses num (+) expr
+            map( // Parses i32 + expr
                 tuple((parse_i32, parse_add, parse_expr)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
-            map( // Parses num (*, /, %) num (bin op) expr
+            map( // Parses unit - unit (bin op) expr
                 tuple((parse_expr_minus, parse_op, parse_expr)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
+            map( // Parses unit - unit (bin op) expr
+                tuple((parse_expr_minus, parse_expr)),
+                |(l, r)| (i, Expr::BinOp(Box::new(l), parse_add(Span::new("+")).unwrap().1, Box::new(r))),
+            ),
             parse_expr_minus,
-            map( // Parses num (*, /, %) num (bin op) expr
+            map( // Parses unit (bin op) expr
                 tuple((parse_expr_mdm, parse_op, parse_expr)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
-                // Parses num (bin_op) num 
             parse_expr_mdm,
         ))
     )(i)
 }
 
+// Parses i32 - unit. res: i32 + -unit
 fn parse_expr_minus(i: Span) -> IResult<Span, SpanExpr>{
     map( 
-        tuple((parse_i32, parse_expr_mdm)),
+        tuple((parse_expr_mdm, parse_expr)),
         |(l, r)| (i, Expr::BinOp(Box::new(l), parse_add(Span::new("+")).unwrap().1, Box::new(r))),
     )(i)
 }
 
+// Parses units. ex: i32, (i32+i32), (...)*i32, i32*(...), (...)*(...) etc
 fn parse_expr_mdm(i: Span) -> IResult<Span, SpanExpr>{
     preceded(multispace0,
         alt((
-            map(
+            map( // Parses i32 (*, /, %) unit
                 tuple((parse_i32, parse_mdm, parse_expr_mdm)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
-            map(
+            map( // (expr) (*, /, %) unit
                 tuple((preceded(tag("("), parse_expr), preceded(tag(")"),parse_mdm), parse_expr_mdm)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
-            map( // Parses (expr (bin op) expr) (bin op) expr
+            map( // Parses (expr) (bin op) expr
                 tuple((preceded(tag("("), parse_expr), preceded(tag(")"),parse_op), parse_expr)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
+                 // Parses (expr)
             terminated(preceded(tag("("), parse_expr),tag(")")),
-            map( // Parses num (+, -) expr
+            map( // Parses - unit
                 tuple((parse_neg, parse_expr_mdm)),
                 |(op, r)| (i, Expr::UOp( op, Box::new(r))),
             ),
+            // Parses string to i32
             parse_i32,
         ))
     )(i)
@@ -167,7 +176,7 @@ fn dump_expr(se: &SpanExpr) -> String {
 }
 
 fn main() {
-    let (_, (s, e)) = parse_expr(Span::new("1-1")).unwrap();
+    let (_, (s, e)) = parse_expr(Span::new("-1-2-3")).unwrap();
     println!(
         "span for the whole,expression: {:?}, \nline: {:?}, \ncolumn: {:?}",
         s,
