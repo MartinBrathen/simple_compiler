@@ -26,113 +26,121 @@ pub enum Op {
 
 type SpanOp<'a> = (Span<'a>, Op);
 
-fn parse_add_sub(i: Span) -> IResult<Span, SpanOp> {
-    alt((
-        map(tag("+"), |s| (s, Op::Add)),
-        map(tag("-"), |s| (s, Op::Sub)),
-        
-    ))(i)
+#[derive(Debug, PartialEq)]
+pub enum UOp {
+    Neg
+}
+
+type SpanUOp<'a> = (Span<'a>, UOp);
+
+
+fn parse_add(i: Span) -> IResult<Span, SpanOp> {
+    preceded(multispace0,
+        map(tag("+"), |s| (s, Op::Add))
+    )(i)
 }
 
 fn parse_mdm(i: Span) -> IResult<Span, SpanOp> {
-    alt((
-        map(tag("*"), |s| (s, Op::Mul)),
-        map(tag("/"), |s| (s, Op::Div)),
-        map(tag("%"), |s| (s, Op::Mod)),
-    ))(i)
+    preceded(multispace0,
+        alt((
+            map(tag("*"), |s| (s, Op::Mul)),
+            map(tag("/"), |s| (s, Op::Div)),
+            map(tag("%"), |s| (s, Op::Mod)),
+        ))
+    )(i)
 }
 
 fn parse_op(i: Span) -> IResult<Span, SpanOp> {
-    alt((
-        map(tag("*"), |s| (s, Op::Mul)),
-        map(tag("/"), |s| (s, Op::Div)),
-        map(tag("%"), |s| (s, Op::Mod)),
-        map(tag("+"), |s| (s, Op::Add)),
-        map(tag("-"), |s| (s, Op::Sub)),
-    ))(i)
+    preceded(multispace0,
+        alt((
+            map(tag("*"), |s| (s, Op::Mul)),
+            map(tag("/"), |s| (s, Op::Div)),
+            map(tag("%"), |s| (s, Op::Mod)),
+            map(tag("+"), |s| (s, Op::Add)),
+        ))
+    )(i)
+}
+
+fn parse_neg(i: Span) -> IResult<Span, SpanUOp> {
+    preceded(multispace0,
+        map(tag("-"), |s| (s, UOp::Neg))
+    )(i)
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Expr<'a> {
     Num(i32),
     BinOp(Box<SpanExpr<'a>>, SpanOp<'a>, Box<SpanExpr<'a>>),
+    UOp(SpanUOp<'a>, Box<SpanExpr<'a>>),
 }
 
 type SpanExpr<'a> = (Span<'a>, Expr<'a>);
 
 pub fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
-    map(digit1, |digit_str: Span| {
-        (
-            digit_str,
-            Expr::Num(digit_str.fragment.parse::<i32>().unwrap()),
-        )
-    })(i)
+    preceded(multispace0,
+        map(digit1, |digit_str: Span| {
+            (
+                digit_str,
+                Expr::Num(digit_str.fragment.parse::<i32>().unwrap()),
+            )
+        })
+    )(i)
 }
 
 fn parse_expr(i: Span) -> IResult<Span, SpanExpr> {
-    alt((
-        map( // Parses num (+, -) expr
-            tuple((parse_i32, preceded(multispace0, parse_add_sub), parse_expr_ms)),
-            |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
-        ),
-        map( // Parses num (bin_op) num (bin op) expr
-            tuple((parse_expr_mdm, preceded(multispace0, parse_op), parse_expr_ms)),
-            |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
-        ),
-            // Parses num (bin_op) num 
-        parse_expr_mdm,
-//-----------------------------------------------------------------------------------------------------------------------------------------
+    preceded(multispace0,
+        alt((
+            map( // Parses num (+) expr
+                tuple((parse_i32, parse_add, parse_expr)),
+                |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
+            ),
+            map( // Parses num (*, /, %) num (bin op) expr
+                tuple((parse_expr_minus, parse_op, parse_expr)),
+                |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
+            ),
+            parse_expr_minus,
+            map( // Parses num (*, /, %) num (bin op) expr
+                tuple((parse_expr_mdm, parse_op, parse_expr)),
+                |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
+            ),
+                // Parses num (bin_op) num 
+            parse_expr_mdm,
+        ))
+    )(i)
+}
 
-
-
-        /* map( // Parses (expr (bin op) expr) (bin op) expr
-            tuple((preceded(tag("("), parse_expr_ms), preceded(tag(")"),preceded(multispace0, parse_op)), parse_expr_mdm)),
-            |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
-            //tuple((remove_parenthesis, preceded(multispace0, parse_op), parse_expr_ms)),
-            //|(l, op, r)| (i, Expr::BinOp(Box::new(parse_expr_ms(l).unwrap().1), op, Box::new(r))),
-        ), */
-        map( // Parses (expr (bin op) expr) (bin op) expr
-            tuple((preceded(tag("("), parse_expr_ms), preceded(tag(")"),preceded(multispace0, parse_op)), parse_expr_ms)),
-            |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
-            //tuple((remove_parenthesis, preceded(multispace0, parse_op), parse_expr_ms)),
-            //|(l, op, r)| (i, Expr::BinOp(Box::new(parse_expr_ms(l).unwrap().1), op, Box::new(r))),
-        ),
-        map( // Parses (expr (bin op) expr) (bin op) expr
-            tuple((preceded(tag("("), parse_expr_ms), preceded(tag(")"),preceded(multispace0, parse_op)), preceded(multispace0, parse_i32))),
-            |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
-            //tuple((remove_parenthesis, preceded(multispace0, parse_op), parse_expr_ms)),
-            //|(l, op, r)| (i, Expr::BinOp(Box::new(parse_expr_ms(l).unwrap().1), op, Box::new(r))),
-        ),
-        
-        terminated(preceded(tag("("), parse_expr_ms),tag(")")),
-        //map( // Parses (expr (bin op) expr)
-            //remove_parenthesis,
-            //|l| parse_expr_ms(l).unwrap().1,
-        //),
-            // Parses a single num
-        parse_i32,
-    ))(i)
+fn parse_expr_minus(i: Span) -> IResult<Span, SpanExpr>{
+    map( 
+        tuple((parse_i32, parse_expr_mdm)),
+        |(l, r)| (i, Expr::BinOp(Box::new(l), parse_add(Span::new("+")).unwrap().1, Box::new(r))),
+    )(i)
 }
 
 fn parse_expr_mdm(i: Span) -> IResult<Span, SpanExpr>{
-    alt((
-        map(
-            tuple((parse_i32, preceded(multispace0, parse_mdm), preceded(multispace0, parse_expr_mdm))),
-            |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
-        ),
-        map(
-            tuple((preceded(tag("("), parse_expr_ms), preceded(tag(")"),preceded(multispace0, parse_mdm)), preceded(multispace0, parse_expr_mdm))),
-            |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
-        ),
-        terminated(preceded(tag("("), parse_expr_ms),tag(")")),
-        parse_i32,
-    ))(i)
+    preceded(multispace0,
+        alt((
+            map(
+                tuple((parse_i32, parse_mdm, parse_expr_mdm)),
+                |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
+            ),
+            map(
+                tuple((preceded(tag("("), parse_expr), preceded(tag(")"),parse_mdm), parse_expr_mdm)),
+                |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
+            ),
+            map( // Parses (expr (bin op) expr) (bin op) expr
+                tuple((preceded(tag("("), parse_expr), preceded(tag(")"),parse_op), parse_expr)),
+                |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
+            ),
+            terminated(preceded(tag("("), parse_expr),tag(")")),
+            map( // Parses num (+, -) expr
+                tuple((parse_neg, parse_expr_mdm)),
+                |(op, r)| (i, Expr::UOp( op, Box::new(r))),
+            ),
+            parse_i32,
+        ))
+    )(i)
 }
 
-
-fn parse_expr_ms(i: Span) -> IResult<Span, SpanExpr> {
-    preceded(multispace0, parse_expr)(i)
-}
 
 // dumps a Span into a String
 fn dump_span(s: &Span) -> String {
@@ -152,11 +160,14 @@ fn dump_expr(se: &SpanExpr) -> String {
         Expr::BinOp(l, (sop, _), r) => {
             format!("<{} {} {}>", dump_expr(l), dump_span(sop), dump_expr(r))
         }
+        Expr::UOp( (sop, _), r) => {
+            format!("<{} {} >",dump_span(sop), dump_expr(r))
+        }
     }
 }
 
 fn main() {
-    let (_, (s, e)) = parse_expr_ms(Span::new("(1*(1+2)+1)*((2+1)*4)")).unwrap();
+    let (_, (s, e)) = parse_expr(Span::new("1-1")).unwrap();
     println!(
         "span for the whole,expression: {:?}, \nline: {:?}, \ncolumn: {:?}",
         s,
