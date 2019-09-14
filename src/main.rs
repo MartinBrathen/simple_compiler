@@ -3,8 +3,8 @@ extern crate nom;
 
 use nom::{
     branch::alt,
-    bytes::complete::{take_till,tag, take_while},
-    character::{complete::{digit1, multispace0, anychar, },is_alphabetic},
+    bytes::complete::{take_till,tag, take_while, take_while1},
+    character::{complete::{digit1, multispace0, anychar,  alpha1, alphanumeric0},is_alphabetic, is_alphanumeric,},
     combinator::{map,map_res},
     sequence::{preceded, tuple, delimited, terminated},
     IResult,
@@ -40,7 +40,8 @@ pub enum Expr<'a> {
     Val(bool),
     BinBOp(Box<SpanExpr<'a>>, SpanBOp<'a>, Box<SpanExpr<'a>>),
     UBOp(SpanUBOp<'a>, Box<SpanExpr<'a>>),
-    Comp(Box<SpanExpr<'a>>, SpanComp<'a>, Box<SpanExpr<'a>>)
+    Comp(Box<SpanExpr<'a>>, SpanComp<'a>, Box<SpanExpr<'a>>),
+    VarRef(String),
 }
 
 type SpanExpr<'a> = (Span<'a>, Expr<'a>);
@@ -162,6 +163,14 @@ pub fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
     )(i)
 }
 
+pub fn parse_var_ref(i: Span) -> IResult<Span, SpanExpr> {
+        map(
+            tuple((alpha1,alphanumeric0)),
+            |(alpha_str,an_str):(Span,Span)| (i,Expr::VarRef(format!("{}{}",alpha_str.fragment,an_str.fragment)))
+        )(i)
+}
+
+
 fn parse_expr_arith(i: Span) -> IResult<Span, SpanExpr> {
 
     preceded(multispace0,
@@ -224,6 +233,7 @@ fn parse_expr_mdm(i: Span) -> IResult<Span, SpanExpr>{
             ),
             // Parses string to i32
             parse_i32,
+            parse_var_ref,
         ))
     )(i)
 }
@@ -279,6 +289,7 @@ fn parse_expr_bu(i: Span) -> IResult<Span, SpanExpr>{
             parse_expr_comp,
             // Parses string to i32
             parse_bool,
+            parse_var_ref,
         ))
     )(i)
 }
@@ -368,13 +379,14 @@ fn dump_expr(se: &SpanExpr) -> String {
         Expr::Comp(l, (sop, _), r) => {
             format!("<{} {} {}>", dump_expr(l), dump_span(sop), dump_expr(r))
         }
+        Expr::VarRef(_) => dump_span(s)
 
     }
 }
 
 fn main() {
     //let (_, (s, e)) = parse_expr(Span::new("-1-2-3")).unwrap();
-    let (_, (s, e)) = parse_expr(Span::new("false == false && true == false")).unwrap();
+    let (_, (s, e)) = parse_expr(Span::new("true && truea")).unwrap();
     println!(
         "span for the whole,expression: {:?}, \nline: {:?}, \ncolumn: {:?}",
         s,
@@ -384,6 +396,7 @@ fn main() {
 
     println!("raw e: {:?}", &e);
     println!("pretty e: {}", dump_expr(&(s, e)));
+    println!("var: {:?}", parse_var_ref(Span::new("hej")).unwrap());
 }
 
 // In this example, we have a `parse_expr_ms` is the "top" level parser.
