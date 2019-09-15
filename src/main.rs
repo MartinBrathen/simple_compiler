@@ -3,8 +3,8 @@ extern crate nom;
 
 use nom::{
     branch::alt,
-    bytes::complete::{take_till,tag, take_while, take_while1},
-    character::{complete::{digit1, multispace0, anychar,  alpha1, alphanumeric0},is_alphabetic, is_alphanumeric,},
+    bytes::complete::{take_until,tag,},
+    character::{complete::{digit1, multispace0, multispace1, anychar,  alpha1, alphanumeric0},is_alphabetic, is_alphanumeric,},
     combinator::{map,map_res},
     sequence::{preceded, tuple, delimited, terminated},
     IResult,
@@ -34,6 +34,7 @@ type SpanUOp<'a> = (Span<'a>, UOp);
 
 #[derive(Debug, PartialEq)]
 pub enum Expr<'a> {
+    Nil,
     Num(i32),
     BinOp(Box<SpanExpr<'a>>, SpanOp<'a>, Box<SpanExpr<'a>>),
     UOp(SpanUOp<'a>, Box<SpanExpr<'a>>),
@@ -71,6 +72,7 @@ pub enum Comp {
 type SpanComp<'a> = (Span<'a>, Comp);
 
 
+
 fn parse_add(i: Span) -> IResult<Span, SpanOp> {
     preceded(multispace0,
         map(tag("+"), |s| (s, Op::Add))
@@ -104,7 +106,7 @@ fn parse_neg(i: Span) -> IResult<Span, SpanUOp> {
     )(i)
 }
 
-pub fn parse_bop(i: Span) -> IResult<Span, SpanBOp> {
+fn parse_bop(i: Span) -> IResult<Span, SpanBOp> {
     preceded(multispace0,
         alt((
             map(tag("&&"), |s| (s, BOp::And)),
@@ -113,25 +115,25 @@ pub fn parse_bop(i: Span) -> IResult<Span, SpanBOp> {
     )(i)
 }
 
-pub fn parse_and(i: Span) -> IResult<Span, SpanBOp> {
+fn parse_and(i: Span) -> IResult<Span, SpanBOp> {
     preceded(multispace0,
         map(tag("&&"), |s| (s, BOp::And))
     )(i)
 }
 
-pub fn parse_or(i: Span) -> IResult<Span, SpanBOp> {
+fn parse_or(i: Span) -> IResult<Span, SpanBOp> {
     preceded(multispace0,
         map(tag("||"), |s| (s, BOp::Or))
     )(i)
 }
 
-pub fn parse_not(i: Span) -> IResult<Span, SpanUBOp> {
+fn parse_not(i: Span) -> IResult<Span, SpanUBOp> {
     preceded(multispace0,
         map(tag("!"), |s| (s, UBOp::Not))
     )(i)
 }
 
-pub fn parse_comp(i: Span) -> IResult<Span, SpanComp> {
+fn parse_comp(i: Span) -> IResult<Span, SpanComp> {
     preceded(multispace0,
         alt((
             map(tag("=="), |s| (s, Comp::Equal)),
@@ -141,7 +143,7 @@ pub fn parse_comp(i: Span) -> IResult<Span, SpanComp> {
 }
 
 
-pub fn parse_bool(i: Span) -> IResult<Span, SpanExpr> {
+fn parse_bool(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         map(alt((tag("true"), tag("false"))), |bool_str: Span| {
             (
@@ -152,7 +154,7 @@ pub fn parse_bool(i: Span) -> IResult<Span, SpanExpr> {
     )(i)
 }
 // Parses Span/string into i32
-pub fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
+fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         map(digit1, |digit_str: Span| {
             (
@@ -163,7 +165,7 @@ pub fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
     )(i)
 }
 
-pub fn parse_var_ref(i: Span) -> IResult<Span, SpanExpr> {
+fn parse_var_ref(i: Span) -> IResult<Span, SpanExpr> {
         map(
             tuple((alpha1,alphanumeric0)),
             |(alpha_str,an_str):(Span,Span)| (i,Expr::VarRef(format!("{}{}",alpha_str.fragment,an_str.fragment)))
@@ -226,7 +228,7 @@ fn parse_expr_mdm(i: Span) -> IResult<Span, SpanExpr>{
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
                  // Parses (expr)
-            terminated(preceded(tag("("), parse_expr),tag(")")),
+            parse_expr_parentheses,
             map( // Parses - unit
                 tuple((parse_neg, alt((parse_i32,parse_expr_mdm)))),
                 |(op, r)| (i, Expr::UOp( op, Box::new(r))),
@@ -281,7 +283,7 @@ fn parse_expr_bu(i: Span) -> IResult<Span, SpanExpr>{
                 tuple((preceded(tag("("), parse_expr_bool), preceded(tag(")"),parse_comp), parse_expr_bool)),
                 |(l, op, r)| (i, Expr::Comp(Box::new(l), op, Box::new(r))),
             ),
-            terminated(preceded(tag("("), parse_expr),tag(")")),
+            parse_expr_parentheses,
             map( // Parses !unit
                 tuple((parse_not, alt((parse_bool, parse_expr_bu)))),
                 |(op, r)| (i, Expr::UBOp( op, Box::new(r))),
@@ -298,8 +300,8 @@ fn parse_expr_comp_bool(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         
         map(
-                tuple((alt((terminated(preceded(tag("("), parse_expr),tag(")")),parse_bool)), parse_comp,
-                alt((parse_expr_comp_bool,terminated(preceded(tag("("), parse_expr),tag(")")),parse_bool)))),
+                tuple((alt((parse_expr_parentheses,parse_bool)), parse_comp,
+                alt((parse_expr_comp_bool,parse_expr_parentheses,parse_bool)))),
                 |(l, op, r)| (i, Expr::Comp(Box::new(l), op, Box::new(r))),
         ),
     )(i)
@@ -309,7 +311,7 @@ fn parse_expr_comp(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         alt((
             map(
-                    tuple((alt((parse_expr_comp_bool,terminated(preceded(tag("("), parse_expr),tag(")")),parse_bool)), parse_comp, parse_expr_bool)),
+                    tuple((alt((parse_expr_comp_bool,parse_expr_parentheses,parse_bool)), parse_comp, parse_expr_bool)),
                     |(l, op, r)| (i, Expr::Comp(Box::new(l), op, Box::new(r))),
             ),
             parse_expr_comp_bool,
@@ -325,7 +327,7 @@ fn parse_expr_comp(i: Span) -> IResult<Span, SpanExpr> {
     )(i)
 }
 
-// Parses arithmetic expressions
+// Parses arithmetic and boolean expressions
 fn parse_expr(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         alt((
@@ -344,6 +346,124 @@ fn parse_expr(i: Span) -> IResult<Span, SpanExpr> {
             parse_expr_arith,
             
         ))
+    )(i)
+}
+
+fn parse_expr_parentheses(i: Span) -> IResult<Span, SpanExpr>{
+    preceded(multispace0, terminated(preceded(tag("("), parse_expr),preceded(multispace0,tag(")"))))(i)
+}
+
+
+pub enum Type{
+    Int,
+    Bool,
+}
+
+type SpanType<'a> = (Span<'a>, Type);
+
+
+
+pub enum Statement<'a> {
+    Nil,
+    VarDec(String, SpanType<'a>, Box::<SpanExpr<'a>>),
+    VarAssign(String, Box::<SpanExpr<'a>>),
+    //         Condition            If                          Else
+    Condition(Box::<SpanExpr<'a>>, Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
+    WhileLoop(Box::<SpanExpr<'a>>, Box::<SpanStatement<'a>>),
+    FDef(String, SpanType<'a>, Box::<SpanStatement<'a>>),
+    Expr(Box::<SpanExpr<'a>>),
+    Node(Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
+    Return(Box::<SpanStatement<'a>>),
+}
+
+type SpanStatement<'a> = (Span<'a>, Statement<'a>);
+
+fn parse_Statement(i: Span) -> IResult<Span, SpanStatement> {
+    preceded(multispace0,
+        alt((
+            
+            
+        ))
+    )(i)
+}
+
+fn parse_type(i: Span) -> IResult<Span, SpanType> {
+    preceded(multispace0,
+        alt((
+            map(tag("i32"),|_|(i, Type::Int)),
+            map(tag("bool"),|_|(i, Type::Bool)),
+        ))
+    )(i)
+}
+
+fn parse_var(i: Span) -> IResult<Span, String> {
+        map(
+            tuple((alpha1,alphanumeric0)),
+            |(alpha_str,an_str):(Span,Span)| format!("{}{}",alpha_str.fragment,an_str.fragment)
+        )(i)
+}
+
+fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
+    preceded(multispace0,
+        preceded(terminated(tag("let"),multispace1),
+
+            map(
+                    tuple((terminated(parse_var,tag(":")), parse_type, preceded(tag("="), parse_expr))),
+                    |(v_name, my_type, expr)| (i, Statement::VarDec(v_name, my_type, Box::new(expr))),
+            )
+
+        )
+    )(i)
+}
+
+fn parse_var_assign(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        map(
+                    tuple((parse_var, preceded(tag("="), parse_expr))),
+                    |(v_name, expr)| (i, Statement::VarAssign(v_name, Box::new(expr))),
+            )
+    )(i)
+}
+
+fn parse_brackets(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        terminated(preceded(tag("{"),parse_Statement),preceded(multispace0,tag("}")))
+    )(i)
+}
+
+fn parse_condition(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        preceded(tag("if"),
+            alt((
+                map(
+                        tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets, parse_else)),
+                        |(cond, statement, else_statement)| (i, Statement::Condition(Box::new(cond), Box::new(statement), Box::new(else_statement))),
+                ),
+                map(
+                        tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets)),
+                        |(cond, statement)| (i, Statement::Condition(Box::new(cond), Box::new(statement), Box::new((Span::new(""),Statement::Nil)))),
+                )
+            ))
+        )
+    )(i)
+}
+
+fn parse_else(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        preceded(tag("else"),
+            parse_brackets
+        )
+    )(i)
+}
+
+fn parse_while_loop(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        preceded(tag("while"),
+            map(
+                    tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets)),
+                    |(cond, statement)| (i, Statement::WhileLoop(Box::new(cond), Box::new(statement))),
+            )
+        )
     )(i)
 }
 
@@ -379,7 +499,8 @@ fn dump_expr(se: &SpanExpr) -> String {
         Expr::Comp(l, (sop, _), r) => {
             format!("<{} {} {}>", dump_expr(l), dump_span(sop), dump_expr(r))
         }
-        Expr::VarRef(_) => dump_span(s)
+        Expr::VarRef(_) => dump_span(s),
+        Expr::Nil => String::from("Nil"),
 
     }
 }
@@ -407,3 +528,5 @@ fn main() {
 // each terminal. This will be useful for later for precise type error reporting.
 //
 // The extra field is not used, it can be used for metadata, such as filename.
+
+// TODO: Fix nicer parentheses handler
