@@ -3,10 +3,10 @@ extern crate nom;
 
 use nom::{
     branch::alt,
-    bytes::complete::{take_until,tag,},
-    character::{complete::{digit1, multispace0, multispace1, anychar,  alpha1, alphanumeric0},is_alphabetic, is_alphanumeric,},
-    combinator::{map,map_res},
-    sequence::{preceded, tuple, delimited, terminated},
+    bytes::complete::{tag,},
+    character::complete::{digit1, multispace0, multispace1,  alpha1, alphanumeric0},
+    combinator::{map},
+    sequence::{preceded, tuple, terminated},
     IResult,
 };
 
@@ -353,7 +353,11 @@ fn parse_expr_parentheses(i: Span) -> IResult<Span, SpanExpr>{
     preceded(multispace0, terminated(preceded(tag("("), parse_expr),preceded(multispace0,tag(")"))))(i)
 }
 
+fn parse_statement_parentheses(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0, terminated(preceded(tag("("), parse_statement),preceded(multispace0,tag(")"))))(i)
+}
 
+#[derive(Debug, PartialEq)]
 pub enum Type{
     Int,
     Bool,
@@ -362,15 +366,16 @@ pub enum Type{
 type SpanType<'a> = (Span<'a>, Type);
 
 
-
+#[derive(Debug, PartialEq)]
 pub enum Statement<'a> {
     Nil,
-    VarDec(String, SpanType<'a>, Box::<SpanExpr<'a>>),
-    VarAssign(String, Box::<SpanExpr<'a>>),
+    VarDec(String, SpanType<'a>, Box::<SpanStatement<'a>>),
+    VarAssign(String, Box::<SpanStatement<'a>>),
     //         Condition            If                          Else
-    Condition(Box::<SpanExpr<'a>>, Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
-    WhileLoop(Box::<SpanExpr<'a>>, Box::<SpanStatement<'a>>),
-    FDef(String, SpanType<'a>, Box::<SpanStatement<'a>>),
+    Condition(Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
+    WhileLoop(Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
+    FDef(String, SpanType<'a>, Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
+    FCall(String, Box::<SpanStatement<'a>>),
     Expr(Box::<SpanExpr<'a>>),
     Node(Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
     Return(Box::<SpanStatement<'a>>),
@@ -378,10 +383,62 @@ pub enum Statement<'a> {
 
 type SpanStatement<'a> = (Span<'a>, Statement<'a>);
 
-fn parse_Statement(i: Span) -> IResult<Span, SpanStatement> {
+
+fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
     preceded(multispace0,
         alt((
-            
+            // -------- Var Declare
+            map(
+                    tuple((terminated(parse_var_dec,preceded(multispace0,tag(";"))), parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
+            ),
+            parse_var_dec,
+            // -------- Var Assign
+            map(
+                    tuple((terminated(parse_var_assign,preceded(multispace0,tag(";"))), parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
+            ),
+            parse_var_assign,
+            // -------- Condition
+            map(
+                    tuple((parse_condition, parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
+            ),
+            parse_condition,
+            // -------- While loop
+            map(
+                    tuple((parse_while_loop, parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
+            ),
+            parse_while_loop,
+            // -------- fn def
+            map(
+                    tuple((parse_f_def, parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
+            ),
+            parse_f_def,
+            // -------- fn call
+            map(
+                    tuple((terminated(parse_f_call,preceded(multispace0,tag(";"))), parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
+            ),
+            parse_f_call,
+            // -------- expr
+            map(
+                    tuple((terminated(parse_expr,preceded(multispace0,tag(";"))), parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new((Span::new(""),Statement::Expr(Box::new(l)))), Box::new(r)))
+            ),
+            map(
+                    parse_expr,
+                    |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
+                    
+            ),
+            // -------- return
+            map(
+                    terminated(parse_return,preceded(multispace0,tag(";"))),
+                    |l| (i, Statement::Return(Box::new(l)))
+            ),
+            parse_return,
             
         ))
     )(i)
@@ -408,8 +465,8 @@ fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
         preceded(terminated(tag("let"),multispace1),
 
             map(
-                    tuple((terminated(parse_var,tag(":")), parse_type, preceded(tag("="), parse_expr))),
-                    |(v_name, my_type, expr)| (i, Statement::VarDec(v_name, my_type, Box::new(expr))),
+                    tuple((terminated(parse_var,tag(":")), parse_type, preceded(preceded(multispace0,tag("=")), parse_statement))),
+                    |(v_name, v_type, val)| (i, Statement::VarDec(v_name, v_type, Box::new(val))),
             )
 
         )
@@ -419,15 +476,15 @@ fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
 fn parse_var_assign(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
         map(
-                    tuple((parse_var, preceded(tag("="), parse_expr))),
-                    |(v_name, expr)| (i, Statement::VarAssign(v_name, Box::new(expr))),
+                    tuple((parse_var, preceded(preceded(multispace0,tag("=")), parse_statement))),
+                    |(v_name, val)| (i, Statement::VarAssign(v_name, Box::new(val))),
             )
     )(i)
 }
 
 fn parse_brackets(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
-        terminated(preceded(tag("{"),parse_Statement),preceded(multispace0,tag("}")))
+        terminated(preceded(tag("{"),parse_statement),preceded(multispace0,tag("}")))
     )(i)
 }
 
@@ -436,11 +493,11 @@ fn parse_condition(i: Span) -> IResult<Span, SpanStatement>{
         preceded(tag("if"),
             alt((
                 map(
-                        tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets, parse_else)),
+                        tuple((alt((preceded(multispace1,parse_statement),parse_statement_parentheses)), parse_brackets, parse_else)),
                         |(cond, statement, else_statement)| (i, Statement::Condition(Box::new(cond), Box::new(statement), Box::new(else_statement))),
                 ),
                 map(
-                        tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets)),
+                        tuple((alt((preceded(multispace1,parse_statement),parse_statement_parentheses)), parse_brackets)),
                         |(cond, statement)| (i, Statement::Condition(Box::new(cond), Box::new(statement), Box::new((Span::new(""),Statement::Nil)))),
                 )
             ))
@@ -460,8 +517,41 @@ fn parse_while_loop(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
         preceded(tag("while"),
             map(
-                    tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets)),
+                    tuple((alt((preceded(multispace1,parse_statement),parse_statement_parentheses)), parse_brackets)),
                     |(cond, statement)| (i, Statement::WhileLoop(Box::new(cond), Box::new(statement))),
+            )
+        )
+    )(i)
+}
+
+fn parse_f_def(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        preceded(tag("fn"),
+            map(
+                    tuple((preceded(multispace1,parse_var), parse_statement_parentheses, preceded(preceded(multispace0,tag("->")),parse_type), parse_brackets)),
+                    |(name, arg, r_type, statement)| (i, Statement::FDef(name, r_type, Box::new(arg), Box::new(statement))),
+            )
+        )
+    )(i)
+}
+
+fn parse_f_call(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        map(
+                tuple((parse_var, parse_statement_parentheses)),
+                |(name, arg)| (i, Statement::FCall(name,Box::new(arg))),
+        )
+    )(i)
+}
+
+fn parse_return(i: Span) -> IResult<Span, SpanStatement>{
+    preceded(multispace0,
+        preceded(tag("return"),
+            preceded(multispace1,
+                map(
+                    parse_statement,
+                    |statement|(i, Statement::Return(Box::new(statement)))
+                )
             )
         )
     )(i)
@@ -507,7 +597,7 @@ fn dump_expr(se: &SpanExpr) -> String {
 
 fn main() {
     //let (_, (s, e)) = parse_expr(Span::new("-1-2-3")).unwrap();
-    let (_, (s, e)) = parse_expr(Span::new("true && truea")).unwrap();
+    let (_, (s, e)) = parse_expr(Span::new("1-2*3")).unwrap();
     println!(
         "span for the whole,expression: {:?}, \nline: {:?}, \ncolumn: {:?}",
         s,
@@ -517,7 +607,8 @@ fn main() {
 
     println!("raw e: {:?}", &e);
     println!("pretty e: {}", dump_expr(&(s, e)));
-    println!("var: {:?}", parse_var_ref(Span::new("hej")).unwrap());
+    let (_, (s, e)) = parse_statement(Span::new("if (1 == 1){a = 2}")).unwrap();
+    println!("raw e: {:?}", &e);
 }
 
 // In this example, we have a `parse_expr_ms` is the "top" level parser.
@@ -529,4 +620,4 @@ fn main() {
 //
 // The extra field is not used, it can be used for metadata, such as filename.
 
-// TODO: Fix nicer parentheses handler
+// TODO: Fix nicer parentheses handling
