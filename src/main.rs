@@ -17,7 +17,6 @@ type Span<'a> = LocatedSpan<&'a str>;
 #[derive(Debug, PartialEq)]
 pub enum Op {
     Add,
-    Sub,
     Mul,
     Div,
     Mod,
@@ -32,9 +31,9 @@ pub enum UOp {
 
 type SpanUOp<'a> = (Span<'a>, UOp);
 
+
 #[derive(Debug, PartialEq)]
 pub enum Expr<'a> {
-    Nil,
     Num(i32),
     BinOp(Box<SpanExpr<'a>>, SpanOp<'a>, Box<SpanExpr<'a>>),
     UOp(SpanUOp<'a>, Box<SpanExpr<'a>>),
@@ -311,7 +310,7 @@ fn parse_expr_comp(i: Span) -> IResult<Span, SpanExpr> {
     preceded(multispace0,
         alt((
             map(
-                    tuple((alt((parse_expr_comp_bool,parse_expr_parentheses,parse_bool)), parse_comp, parse_expr_bool)),
+                    tuple((alt((parse_expr_comp_bool,parse_expr_parentheses,parse_bool)), parse_comp, parse_expr)),
                     |(l, op, r)| (i, Expr::Comp(Box::new(l), op, Box::new(r))),
             ),
             parse_expr_comp_bool,
@@ -320,7 +319,7 @@ fn parse_expr_comp(i: Span) -> IResult<Span, SpanExpr> {
                     |(l, op, r)| (i, Expr::Comp(Box::new(l), op, Box::new(r))),
             ),
             map(
-                    tuple((parse_expr_arith, parse_comp, parse_expr_arith)),
+                    tuple((parse_expr_arith, parse_comp, parse_expr)),
                     |(l, op, r)| (i, Expr::Comp(Box::new(l), op, Box::new(r))),
             ),
         ))
@@ -366,6 +365,8 @@ pub enum Type{
 type SpanType<'a> = (Span<'a>, Type);
 
 
+
+
 #[derive(Debug, PartialEq)]
 pub enum Statement<'a> {
     Nil,
@@ -387,18 +388,30 @@ type SpanStatement<'a> = (Span<'a>, Statement<'a>);
 fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
     preceded(multispace0,
         alt((
+            // -------- return
+            map(
+                    terminated(parse_return,preceded(multispace0,tag(";"))),
+                    |l| (i, Statement::Return(Box::new(l)))
+            ),
+            parse_return,
             // -------- Var Declare
             map(
                     tuple((terminated(parse_var_dec,preceded(multispace0,tag(";"))), parse_statement)),
                     |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
-            parse_var_dec,
+            map(
+                    parse_var_dec,
+                    |r| (i, Statement::Return(Box::new(r)))
+            ),
             // -------- Var Assign
             map(
                     tuple((terminated(parse_var_assign,preceded(multispace0,tag(";"))), parse_statement)),
                     |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
-            parse_var_assign,
+            map(
+                    parse_var_assign,
+                    |r| (i, Statement::Return(Box::new(r)))
+            ),
             // -------- Condition
             map(
                     tuple((parse_condition, parse_statement)),
@@ -422,7 +435,10 @@ fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
                     tuple((terminated(parse_f_call,preceded(multispace0,tag(";"))), parse_statement)),
                     |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
-            parse_f_call,
+            map(
+                    parse_f_call,
+                    |r| (i, Statement::Return(Box::new(r)))
+            ),
             // -------- expr
             map(
                     tuple((terminated(parse_expr,preceded(multispace0,tag(";"))), parse_statement)),
@@ -433,16 +449,15 @@ fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
                     |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
                     
             ),
-            // -------- return
             map(
-                    terminated(parse_return,preceded(multispace0,tag(";"))),
-                    |l| (i, Statement::Return(Box::new(l)))
+                tag(""),
+                |_| (i,Statement::Nil)
             ),
-            parse_return,
-            
         ))
     )(i)
 }
+
+
 
 fn parse_type(i: Span) -> IResult<Span, SpanType> {
     preceded(multispace0,
@@ -464,10 +479,18 @@ fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
     preceded(multispace0,
         preceded(terminated(tag("let"),multispace1),
 
-            map(
-                    tuple((terminated(parse_var,tag(":")), parse_type, preceded(preceded(multispace0,tag("=")), parse_statement))),
-                    |(v_name, v_type, val)| (i, Statement::VarDec(v_name, v_type, Box::new(val))),
-            )
+            alt((
+
+                map(
+                        tuple((terminated(parse_var,tag(":")), parse_type, preceded(preceded(multispace0,tag("=")), parse_statement))),
+                        |(v_name, v_type, val)| (i, Statement::VarDec(v_name, v_type, Box::new(val))),
+                ),
+                map(
+                        tuple((terminated(parse_var,tag(":")), parse_type)),
+                        |(v_name, v_type)| (i, Statement::VarDec(v_name, v_type, Box::new((Span::new(""),Statement::Nil)))),
+                ),
+
+            ))
 
         )
     )(i)
@@ -568,6 +591,58 @@ fn dump_span(s: &Span) -> String {
     )
 }
 
+fn dump_span_nofrag(s: &Span) -> String {
+    format!(
+        "line :{:?}, col:{:?}",
+        s.line,
+        s.get_column(),
+    )
+}
+
+fn dump_statement(se: &SpanStatement) -> String {
+    let (_, e) = se;
+    match e {
+        Statement::VarDec(st, t, v) => {
+            format!("<{:?}: {} {} {}>", "VarDec:", st, dump_type(t), dump_statement(v))
+        }
+        Statement::VarAssign(st, v) => {
+            format!("<{:?}: {} {}>", "VarrAssign:", st, dump_statement(v))
+        }
+        Statement::Condition(c, i, n) => {
+            format!("<{:?}: {} {} {}>", "Condition:", dump_statement(c), dump_statement(i), dump_statement(n))
+        }
+        Statement::WhileLoop(c, state) => {
+            format!("<{:?}: {} {}>", "WhileLoop:", dump_statement(c), dump_statement(state))
+        }
+        Statement::FDef(st, t, par, stat) => {
+            format!("<{:?}: {} {} {} {}>", "FDef:", st, dump_type(t), dump_statement(par), dump_statement(stat))
+        }
+        Statement::FCall(st, arg) => {
+            format!("<{:?}: {} {}>", "FCall:", st, dump_statement(arg))
+        }
+        Statement::Expr(expr) => {
+            format!("<{:?}: {}>", "Expr:", dump_expr(expr))
+        }
+        Statement::Node(l, r) => {
+            format!("<{:?}: {} {}>", "Node:", dump_statement(l), dump_statement(r))
+        }
+        Statement::Return(r) => {
+            format!("<{:?}: {}>", "Return:", dump_statement(r))
+        }
+        Statement::Nil => {
+            format!("<{:?}>", "Nil")
+        }
+    }
+}
+
+
+fn dump_type(st: &SpanType) -> String {
+    let (s, e) = st;
+    format!("[{:?}, {:?}]",dump_span_nofrag(s), e)
+}
+
+
+
 // dumps a SpanExpr into a String
 fn dump_expr(se: &SpanExpr) -> String {
     let (s, e) = se;
@@ -590,25 +665,122 @@ fn dump_expr(se: &SpanExpr) -> String {
             format!("<{} {} {}>", dump_expr(l), dump_span(sop), dump_expr(r))
         }
         Expr::VarRef(_) => dump_span(s),
-        Expr::Nil => String::from("Nil"),
 
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Val {
+    Int(i32),
+    Bool(bool),
+}
+
+fn eval_expr(i: &SpanExpr) -> Val {
+    let (_,e) = i;
+    match e {
+        Expr::Num(v) => {
+            Val::Int(*v)
+        }
+        Expr::Val(v) => {
+            Val::Bool(*v)
+        }
+        Expr::BinOp(l, (_, op), r) => {
+            let (le, re) = match (eval_expr(l),eval_expr(r)) {
+                (Val::Int(val), Val::Int(val2)) => {
+                    (val, val2)
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match op {
+                Op::Add => { Val::Int(le + re) }
+                Op::Mul => { Val::Int(le * re) }
+                Op::Div => { Val::Int(le / re) }
+                Op::Mod => { Val::Int(le % re) }
+            }
+        }
+        Expr::UOp((_, uop), r) => {
+            let re = match eval_expr(r) {
+                Val::Int(val) => {
+                    val
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match uop {
+                UOp::Neg => {
+                    Val::Int(-re)
+                }
+            }
+        }
+        Expr::BinBOp(l, (_, bop), r) => {
+            let (le, re) = match (eval_expr(l),eval_expr(r)) {
+                (Val::Bool(val), Val::Bool(val2)) => {
+                    (val, val2)
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match bop {
+                BOp::And => {
+                    Val::Bool(le && re)
+                }
+                BOp::Or => {
+                    Val::Bool(le || re)
+                }
+            }
+        }
+        Expr::UBOp((_, ubop), r) => {
+            let re = match eval_expr(r) {
+                Val::Bool(val) => {
+                    val
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match ubop {
+                UBOp::Not => {
+                    Val::Bool(!re)
+                }
+            }
+        }
+        Expr::Comp(l, (_, comp), r) => {
+            let (le, re) = (eval_expr(l),eval_expr(r));
+            match (le, re) {
+                (Val::Bool(_), Val::Bool(_)) => {}
+                (Val::Int(_), Val::Int(_)) => {}
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match comp {
+                Comp::Equal => {
+                    Val::Bool(le == re)
+                }
+                Comp::NotEqual => {
+                    Val::Bool(le != re)
+                }
+            }
+        }
+        _ => {
+            panic!("cant handle var refs")
+        }
+    }
+}
+
+
 fn main() {
     //let (_, (s, e)) = parse_expr(Span::new("-1-2-3")).unwrap();
-    let (_, (s, e)) = parse_expr(Span::new("1-2*3")).unwrap();
-    println!(
-        "span for the whole,expression: {:?}, \nline: {:?}, \ncolumn: {:?}",
-        s,
-        s.line,
-        s.get_column()
-    );
-
+    let (_, (s, e)) = parse_expr(Span::new("true == false && false")).unwrap();
     println!("raw e: {:?}", &e);
-    println!("pretty e: {}", dump_expr(&(s, e)));
-    let (_, (s, e)) = parse_statement(Span::new("if (1 == 1){a = 2}")).unwrap();
-    println!("raw e: {:?}", &e);
+    //println!("pretty e: {}", dump_expr(&(s, e)));
+    println!("eval : {:?}", eval_expr(&(s, e)));
+    let (_, (s, e)) = parse_statement(Span::new("let a: bool;")).unwrap();
+    println!("pretty e: {:?}", dump_statement(&(s, e)));
 }
 
 // In this example, we have a `parse_expr_ms` is the "top" level parser.
