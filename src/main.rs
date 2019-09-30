@@ -628,14 +628,10 @@ fn parse_arguments(i: Span) -> IResult<Span, SpanStatement>{
 fn parse_argument(i: Span) -> IResult<Span, SpanStatement> {
     preceded(multispace0,
         alt((
+            parse_f_call,
             map(
-                    parse_f_call,
-                    |r| (i, Statement::Return(Box::new(r)))
-            ),
-            map(
-                    parse_expr,
-                    |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
-                    
+                parse_expr,
+                |l| (i, Statement::Expr(Box::new(l)))
             ),
         ))
     )(i)
@@ -747,9 +743,10 @@ fn dump_expr(se: &SpanExpr) -> String {
 pub enum Val {
     Int(i32),
     Bool(bool),
+    Nil
 }
 
-fn eval_expr(i: &SpanExpr) -> Val {
+fn eval_expr(i: &SpanExpr, var_hmap: &HashMap<String, (Val, &Type)>) -> Val {
     let (_,e) = i;
     match e {
         Expr::Num(v) => {
@@ -759,7 +756,7 @@ fn eval_expr(i: &SpanExpr) -> Val {
             Val::Bool(*v)
         }
         Expr::BinOp(l, (_, op), r) => {
-            let (le, re) = match (eval_expr(l),eval_expr(r)) {
+            let (le, re) = match (eval_expr(l, var_hmap),eval_expr(r, var_hmap)) {
                 (Val::Int(val), Val::Int(val2)) => {
                     (val, val2)
                 }
@@ -775,7 +772,7 @@ fn eval_expr(i: &SpanExpr) -> Val {
             }
         }
         Expr::UOp((_, uop), r) => {
-            let re = match eval_expr(r) {
+            let re = match eval_expr(r, var_hmap) {
                 Val::Int(val) => {
                     val
                 }
@@ -790,7 +787,7 @@ fn eval_expr(i: &SpanExpr) -> Val {
             }
         }
         Expr::BinBOp(l, (_, bop), r) => {
-            let (le, re) = match (eval_expr(l),eval_expr(r)) {
+            let (le, re) = match (eval_expr(l, var_hmap),eval_expr(r, var_hmap)) {
                 (Val::Bool(val), Val::Bool(val2)) => {
                     (val, val2)
                 }
@@ -808,7 +805,7 @@ fn eval_expr(i: &SpanExpr) -> Val {
             }
         }
         Expr::UBOp((_, ubop), r) => {
-            let re = match eval_expr(r) {
+            let re = match eval_expr(r, var_hmap) {
                 Val::Bool(val) => {
                     val
                 }
@@ -823,7 +820,7 @@ fn eval_expr(i: &SpanExpr) -> Val {
             }
         }
         Expr::Comp(l, (_, comp), r) => {
-            let (le, re) = (eval_expr(l),eval_expr(r));
+            let (le, re) = (eval_expr(l, var_hmap),eval_expr(r, var_hmap));
             match (le, re) {
                 (Val::Bool(_), Val::Bool(_)) => {}
                 (Val::Int(_), Val::Int(_)) => {}
@@ -840,8 +837,9 @@ fn eval_expr(i: &SpanExpr) -> Val {
                 }
             }
         }
-        _ => {
-            panic!("cant handle var refs")
+        Expr::VarRef(st) => {
+            let (x,_) = var_hmap.get(st).unwrap();
+            *x
         }
     }
 }
@@ -864,20 +862,84 @@ fn build_fn_hash<'a>(i: &'a SpanStatement, mut hm: HashMap<String, &'a Statement
         }
     }
 
+}fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>) -> Val {
+    let mut var_hmap: HashMap<String, (Val, &Type)> = HashMap::new();
+    let fnc = fn_hmap.get(fn_name).unwrap();
+    let fn_par: &SpanStatement;
+    let fn_body: &SpanStatement;
+    let fn_type: &SpanType;
+    match fnc {
+        Statement::FDef(_, t, par, body) => {
+            fn_par = par;
+            fn_body = body;
+            fn_type = t;
+        }
+        _ => {
+            panic!("build_fn_hash f'd up");
+        }
+    }
+    let (_, t) = fn_type;
+    var_hmap.insert("return".to_owned(), (Val::Nil, t));
+
+    println!("interpret_fn:  {:?}", fn_hmap.get(fn_name).unwrap());
+    return Val::Int(32)
 }
 
+fn interpret_statement<'a>(fn_hmap: &'a HashMap<String, &Statement>, var_hmap: &mut HashMap<String, (Val, &'a Type)>, body: &'a SpanStatement){
+    let (_, bdy) = body; // remove span
+    match bdy {
+        Statement::Expr(e) => {
+            eval_expr(e, var_hmap);
+        }
+        Statement::VarDec(name,t,s) => {
+            let (_,at) = t;
+            var_hmap.insert(name.to_owned(), (eval_fcall_or_expr(fn_hmap, var_hmap, s),at));
+        }
+        Statement::VarAssign(name,s) => {
+            let (_, t) = var_hmap.get(name).unwrap();
+            var_hmap.insert(name.to_owned(), (eval_fcall_or_expr(fn_hmap, var_hmap, s),t));
+        }
+        Statement::Node(l,r) => {
+            interpret_statement(fn_hmap, var_hmap, l);
+            interpret_statement(fn_hmap, var_hmap, r);
+        }
+        Statement::FCall(name,s) => {
+            interpret_fn(&name, fn_hmap);
+        }
+        Statement::Return(s) => {
+            let (_, t) = var_hmap.get("return").unwrap();
+            var_hmap.insert("return".to_owned(), (eval_fcall_or_expr(fn_hmap, var_hmap, s), t));
+        }
+        _ => { // does not support loops and ifs yeet
+            panic!("Does not interpret FDef and Nil") 
+        }
+    }
+}
+
+fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, var_hmap: &HashMap<String, (Val, &Type)>, body: &SpanStatement) -> Val {
+    let (_, s) = body;
+    match s {
+        Statement::Expr(e) => {
+            return eval_expr(e, var_hmap);
+        }
+        Statement::FCall(st, arg) => {
+            return interpret_fn(&st, fn_hmap)
+        }
+        _ => {
+            panic!("Can only take expr or fcall as argument")
+        }
+    }
+}
 
 
 fn main() {
     //let (_, (s, e)) = parse_expr(Span::new("-1-2-3")).unwrap();
     let (_, (s, e)) = parse_expr(Span::new("true == false && false")).unwrap();
     println!("raw e: {:?}", &e);
-    //println!("pretty e: {}", dump_expr(&(s, e)));
-    println!("eval : {:?}", eval_expr(&(s, e)));
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32 {let a: bool} fn f2() -> i32{let b: bool = true}")).unwrap();
+    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32 {return 1} fn f2() -> i32{return 2}")).unwrap();
     //println!("pretty e: {:?}", dump_statement(&(s, e)));
     let mut hash_map = HashMap::new();
-    println!("Hash map: {:?}", build_fn_hash(&(s,e), hash_map).get("f1"));
+    interpret_fn("f1",&build_fn_hash(&(s,e), hash_map));
 }
 
 // In this example, we have a `parse_expr_ms` is the "top" level parser.
