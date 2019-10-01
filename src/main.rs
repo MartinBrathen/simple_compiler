@@ -179,7 +179,7 @@ fn parse_expr_arith(i: Span) -> IResult<Span, SpanExpr> {
         alt((
 
             map( // Parses i32 + expr
-                tuple((parse_i32, parse_add, parse_expr_arith)),
+                tuple((parse_i32_or_var, parse_add, parse_expr_arith)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
             map( // Parses unit - unit (bin op) expr
@@ -216,7 +216,7 @@ fn parse_expr_mdm(i: Span) -> IResult<Span, SpanExpr>{
         alt((
             
             map( // Parses i32 (*, /, %) unit
-                tuple((parse_i32, parse_mdm, parse_expr_mdm)),
+                tuple((parse_i32_or_var, parse_mdm, parse_expr_mdm)),
                 |(l, op, r)| (i, Expr::BinOp(Box::new(l), op, Box::new(r))),
             ),
             map( // (expr) (*, /, %) unit
@@ -230,10 +230,18 @@ fn parse_expr_mdm(i: Span) -> IResult<Span, SpanExpr>{
                  // Parses (expr)
             parse_expr_parentheses,
             map( // Parses - unit
-                tuple((parse_neg, alt((parse_i32,parse_expr_mdm)))),
+                tuple((parse_neg, alt((parse_i32_or_var,parse_expr_mdm)))),
                 |(op, r)| (i, Expr::UOp( op, Box::new(r))),
             ),
             // Parses string to i32
+            parse_i32_or_var
+        ))
+    )(i)
+}
+
+fn parse_i32_or_var(i: Span) -> IResult<Span, SpanExpr>{
+    preceded(multispace0,
+        alt((
             parse_i32,
             parse_var_ref,
         ))
@@ -252,7 +260,7 @@ fn parse_expr_bool(i: Span) -> IResult<Span, SpanExpr> {
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
             map(
-                tuple((parse_expr_bu, parse_bop, parse_expr_bool)),
+                tuple((alt((parse_expr_bu, parse_var_ref)), parse_bop, parse_expr_bool)),
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
 
@@ -268,11 +276,11 @@ fn parse_expr_bu(i: Span) -> IResult<Span, SpanExpr>{
     preceded(multispace0,
         alt((
             map( // Parses i32 (*, /, %) unit
-                tuple((parse_bool, parse_and, parse_expr_bu)),
+                tuple((parse_bool, parse_and, alt((parse_expr_bu, parse_var_ref)))),
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
             map( // (expr) (*, /, %) unit
-                tuple((preceded(tag("("), parse_expr_bool), preceded(tag(")"), parse_and), parse_expr_bu)),
+                tuple((preceded(tag("("), parse_expr_bool), preceded(tag(")"), parse_and), alt((parse_expr_bu, parse_var_ref)))),
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
             map( // Parses (expr) (bin op) expr
@@ -285,13 +293,12 @@ fn parse_expr_bu(i: Span) -> IResult<Span, SpanExpr>{
             ),
             parse_expr_parentheses,
             map( // Parses !unit
-                tuple((parse_not, alt((parse_bool, parse_expr_bu)))),
+                tuple((parse_not, alt((parse_expr_bu, parse_var_ref)))),
                 |(op, r)| (i, Expr::UBOp( op, Box::new(r))),
             ),
             parse_expr_comp,
             // Parses string to i32
             parse_bool,
-            parse_var_ref,
         ))
     )(i)
 }
@@ -930,7 +937,8 @@ fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, var_hmap: &mut
         }
         Statement::VarAssign(name,s) => {
             let (_, t) = var_hmap.get(name).unwrap();
-            var_hmap.insert(name.to_owned(), (eval_fcall_or_expr(fn_hmap, var_hmap, s),t));
+            let v = eval_fcall_or_expr(fn_hmap, var_hmap, s);
+            var_hmap.insert(name.to_owned(), (v, t));
         }
         Statement::Node(l,r) => {
             interpret_statement(fn_hmap, var_hmap, l);
@@ -968,9 +976,8 @@ fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, var_hmap: &HashMap<
 }
 
 
-fn main() {
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let a : i32 = f2(); a} fn f2() -> i32{return 5}")).unwrap();
-    //println!("pretty e: {:?}", dump_statement(&(s, e)));
+fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}"
+    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}")).unwrap();
     let mut hash_map = HashMap::new();
     let ss: SpanStatement = (Span::new(""), Statement::Nil);
     println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &ss));
