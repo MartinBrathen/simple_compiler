@@ -354,7 +354,7 @@ fn parse_expr_parentheses(i: Span) -> IResult<Span, SpanExpr>{
 }
 
 fn parse_statement_parentheses(i: Span) -> IResult<Span, SpanStatement>{
-    preceded(multispace0, terminated(preceded(tag("("), parse_statement),preceded(multispace0,tag(")"))))(i)
+    preceded(multispace0, terminated(preceded(tag("("), parse_statement_returning),preceded(multispace0,tag(")"))))(i)
 }
 
 #[derive(Debug, PartialEq)]
@@ -399,30 +399,18 @@ fn parse_outer_statement(i: Span) -> IResult<Span, SpanStatement> {
 fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
     preceded(multispace0,
         alt((
-            // -------- return
-            map(
-                    terminated(parse_return,preceded(multispace0,tag(";"))),
-                    |l| (i, Statement::Return(Box::new(l)))
-            ),
-            parse_return,
             // -------- Var Declare
             map(
                     tuple((terminated(parse_var_dec,preceded(multispace0,tag(";"))), parse_statement)),
                     |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
-            map(
-                    parse_var_dec,
-                    |r| (i, Statement::Return(Box::new(r)))
-            ),
+            terminated(parse_var_dec,preceded(multispace0,tag(";"))),
             // -------- Var Assign
             map(
                     tuple((terminated(parse_var_assign,preceded(multispace0,tag(";"))), parse_statement)),
                     |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
-            map(
-                    parse_var_assign,
-                    |r| (i, Statement::Return(Box::new(r)))
-            ),
+            terminated(parse_var_assign,preceded(multispace0,tag(";"))),
             // -------- Condition
             map(
                     tuple((parse_condition, parse_statement)),
@@ -440,28 +428,40 @@ fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
                     tuple((terminated(parse_f_call,preceded(multispace0,tag(";"))), parse_statement)),
                     |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
+            // -------- expr
+            map(
+                    tuple((terminated(parse_expr,preceded(multispace0,tag(";"))), parse_statement)),
+                    |(l, r)| (i, Statement::Node(Box::new((Span::new(""),Statement::Expr(Box::new(l)))), Box::new(r)))
+            ),
+            // -------- Statements that return a value
+            parse_statement_returning,
+        ))
+    )(i)
+}
+
+fn parse_statement_returning(i: Span) -> IResult<Span, SpanStatement> {
+    preceded(multispace0,
+        alt((
+            // -------- return
+            map(
+                    terminated(parse_return,preceded(multispace0,tag(";"))),
+                    |l| (i, Statement::Return(Box::new(l)))
+            ),
+            parse_return,
+            // -------- fn call
             map(
                     parse_f_call,
                     |r| (i, Statement::Return(Box::new(r)))
             ),
             // -------- expr
             map(
-                    tuple((terminated(parse_expr,preceded(multispace0,tag(";"))), parse_statement)),
-                    |(l, r)| (i, Statement::Node(Box::new((Span::new(""),Statement::Expr(Box::new(l)))), Box::new(r)))
-            ),
-            map(
                     parse_expr,
                     |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
                     
             ),
-            map(
-                tag(""),
-                |_| (i,Statement::Nil)
-            ),
         ))
     )(i)
 }
-
 
 
 fn parse_type(i: Span) -> IResult<Span, SpanType> {
@@ -487,11 +487,11 @@ fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
             alt((
 
                 map(
-                        tuple((terminated(parse_var,tag(":")), parse_type, preceded(preceded(multispace0,tag("=")), parse_statement))),
+                        tuple((terminated(parse_var,preceded(multispace0,tag(":"))), parse_type, preceded(preceded(multispace0,tag("=")), parse_statement_returning))),
                         |(v_name, v_type, val)| (i, Statement::VarDec(v_name, v_type, Box::new(val))),
                 ),
                 map(
-                        tuple((terminated(parse_var,tag(":")), parse_type)),
+                        tuple((terminated(parse_var,preceded(multispace0,tag(":"))), parse_type)),
                         |(v_name, v_type)| (i, Statement::VarDec(v_name, v_type, Box::new((Span::new(""),Statement::Nil)))),
                 ),
 
@@ -504,7 +504,7 @@ fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
 fn parse_var_assign(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
         map(
-                    tuple((parse_var, preceded(preceded(multispace0,tag("=")), parse_statement))),
+                    tuple((parse_var, preceded(preceded(multispace0,tag("=")), parse_statement_returning))),
                     |(v_name, val)| (i, Statement::VarAssign(v_name, Box::new(val))),
             )
     )(i)
@@ -641,10 +641,10 @@ fn parse_return(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
         preceded(tag("return"),
             preceded(multispace1,
-                map(
-                    parse_statement,
-                    |statement|(i, Statement::Return(Box::new(statement)))
-                )
+                alt((
+                    terminated(parse_statement_returning,preceded(multispace0, tag(";"))),
+                    parse_statement_returning,
+                ))
             )
         )
     )(i)
@@ -862,7 +862,7 @@ fn build_fn_hash<'a>(i: &'a SpanStatement, mut hm: HashMap<String, &'a Statement
         }
     }
 
-}fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>) -> Val {
+}fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>, s_arg: &SpanStatement) -> Val {
     let mut var_hmap: HashMap<String, (Val, &Type)> = HashMap::new();
     let fnc = fn_hmap.get(fn_name).unwrap();
     let fn_par: &SpanStatement;
@@ -881,11 +881,44 @@ fn build_fn_hash<'a>(i: &'a SpanStatement, mut hm: HashMap<String, &'a Statement
     let (_, t) = fn_type;
     var_hmap.insert("return".to_owned(), (Val::Nil, t));
 
-    println!("interpret_fn:  {:?}", fn_hmap.get(fn_name).unwrap());
-    return Val::Int(32)
+    dec_param(fn_hmap, &mut var_hmap, fn_par, s_arg);
+    interpret_statement(fn_hmap, &mut var_hmap, fn_body);
+
+    let (ret,_) = var_hmap.get("return").unwrap();
+    return *ret
 }
 
-fn interpret_statement<'a>(fn_hmap: &'a HashMap<String, &Statement>, var_hmap: &mut HashMap<String, (Val, &'a Type)>, body: &'a SpanStatement){
+fn dec_param<'a>(fn_hmap: &HashMap<String, &Statement>, var_hmap: &mut HashMap<String, (Val, &'a Type)>, s_param: &'a SpanStatement, s_arg: &SpanStatement){
+    let (_, param) = s_param;
+    let (_, arg) = s_arg;
+    let v: Val;
+    match (param,arg) {
+        (Statement::Nil, Statement::Nil) => {
+            return
+        }
+        (Statement::Node(lp, rp), Statement::Node(la, ra)) => {
+            dec_param(fn_hmap, var_hmap, lp, la);
+            dec_param(fn_hmap, var_hmap, rp, ra);
+        }
+        (Statement::VarDec(name, ts,_),arg) => {
+            let (_,t) = ts;
+            match arg {
+                Statement::Expr(_) | Statement::FCall(_,_) => {
+                    v = eval_fcall_or_expr(fn_hmap, var_hmap, s_arg)
+                }
+                _ => {
+                    panic!("f'd argument")
+                }
+            }
+            var_hmap.insert(name.to_owned(), (v,t));
+        }
+        (_,_) => {
+            panic!("Bad argument")
+        }
+    }
+}
+
+fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, var_hmap: &mut HashMap<String, (Val, &'a Type)>, body: &'a SpanStatement){
     let (_, bdy) = body; // remove span
     match bdy {
         Statement::Expr(e) => {
@@ -903,8 +936,8 @@ fn interpret_statement<'a>(fn_hmap: &'a HashMap<String, &Statement>, var_hmap: &
             interpret_statement(fn_hmap, var_hmap, l);
             interpret_statement(fn_hmap, var_hmap, r);
         }
-        Statement::FCall(name,s) => {
-            interpret_fn(&name, fn_hmap);
+        Statement::FCall(name, s_arg) => {
+            interpret_fn(name, fn_hmap, s_arg);
         }
         Statement::Return(s) => {
             let (_, t) = var_hmap.get("return").unwrap();
@@ -923,23 +956,24 @@ fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, var_hmap: &HashMap<
             return eval_expr(e, var_hmap);
         }
         Statement::FCall(st, arg) => {
-            return interpret_fn(&st, fn_hmap)
+            return interpret_fn(&st, fn_hmap, arg)
+        }
+        Statement::Return(ss) => {
+            eval_fcall_or_expr(fn_hmap, var_hmap, ss)
         }
         _ => {
-            panic!("Can only take expr or fcall as argument")
+            panic!("Can only take expr, fcall or return as argument")
         }
     }
 }
 
 
 fn main() {
-    //let (_, (s, e)) = parse_expr(Span::new("-1-2-3")).unwrap();
-    let (_, (s, e)) = parse_expr(Span::new("true == false && false")).unwrap();
-    println!("raw e: {:?}", &e);
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32 {return 1} fn f2() -> i32{return 2}")).unwrap();
+    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let a : i32 = f2(); a} fn f2() -> i32{return 5}")).unwrap();
     //println!("pretty e: {:?}", dump_statement(&(s, e)));
     let mut hash_map = HashMap::new();
-    interpret_fn("f1",&build_fn_hash(&(s,e), hash_map));
+    let ss: SpanStatement = (Span::new(""), Statement::Nil);
+    println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &ss));
 }
 
 // In this example, we have a `parse_expr_ms` is the "top" level parser.
