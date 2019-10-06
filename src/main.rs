@@ -364,7 +364,7 @@ fn parse_statement_parentheses(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0, terminated(preceded(tag("("), parse_statement_returning),preceded(multispace0,tag(")"))))(i)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone ,Debug, PartialEq)]
 pub enum Type{
     Int,
     Bool,
@@ -440,6 +440,10 @@ fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
                     tuple((terminated(parse_expr,preceded(multispace0,tag(";"))), parse_statement)),
                     |(l, r)| (i, Statement::Node(Box::new((Span::new(""),Statement::Expr(Box::new(l)))), Box::new(r)))
             ),
+            map(
+                    terminated(parse_expr,preceded(multispace0, tag(";"))),
+                    |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
+            ),
             // -------- Statements that return a value
             parse_statement_returning,
         ))
@@ -464,7 +468,6 @@ fn parse_statement_returning(i: Span) -> IResult<Span, SpanStatement> {
             map(
                     parse_expr,
                     |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
-                    
             ),
         ))
     )(i)
@@ -518,9 +521,7 @@ fn parse_var_assign(i: Span) -> IResult<Span, SpanStatement>{
 }
 
 fn parse_brackets(i: Span) -> IResult<Span, SpanStatement>{
-    preceded(multispace0,
-        terminated(preceded(tag("{"),parse_statement),preceded(multispace0,tag("}")))
-    )(i)
+    preceded(multispace0, terminated(preceded(tag("{"), parse_statement),preceded(multispace0,tag("}"))))(i)
 }
 
 fn parse_condition(i: Span) -> IResult<Span, SpanStatement>{
@@ -750,237 +751,249 @@ fn dump_expr(se: &SpanExpr) -> String {
 pub enum Val {
     Int(i32),
     Bool(bool),
-    Nil
+    Nil,
 }
 
-fn eval_expr(i: &SpanExpr, var_hmap: &HashMap<String, (Val, &Type)>) -> Val {
-    let (_,e) = i;
-    match e {
-        Expr::Num(v) => {
-            Val::Int(*v)
-        }
-        Expr::Val(v) => {
-            Val::Bool(*v)
-        }
-        Expr::BinOp(l, (_, op), r) => {
-            let (le, re) = match (eval_expr(l, var_hmap),eval_expr(r, var_hmap)) {
-                (Val::Int(val), Val::Int(val2)) => {
-                    (val, val2)
-                }
-                _ => {
-                    panic!("typechecking fucked up")
-                }
-            };
-            match op {
-                Op::Add => { Val::Int(le + re) }
-                Op::Mul => { Val::Int(le * re) }
-                Op::Div => { Val::Int(le / re) }
-                Op::Mod => { Val::Int(le % re) }
-            }
-        }
-        Expr::UOp((_, uop), r) => {
-            let re = match eval_expr(r, var_hmap) {
-                Val::Int(val) => {
-                    val
-                }
-                _ => {
-                    panic!("typechecking fucked up")
-                }
-            };
-            match uop {
-                UOp::Neg => {
-                    Val::Int(-re)
-                }
-            }
-        }
-        Expr::BinBOp(l, (_, bop), r) => {
-            let (le, re) = match (eval_expr(l, var_hmap),eval_expr(r, var_hmap)) {
-                (Val::Bool(val), Val::Bool(val2)) => {
-                    (val, val2)
-                }
-                _ => {
-                    panic!("typechecking fucked up")
-                }
-            };
-            match bop {
-                BOp::And => {
-                    Val::Bool(le && re)
-                }
-                BOp::Or => {
-                    Val::Bool(le || re)
-                }
-            }
-        }
-        Expr::UBOp((_, ubop), r) => {
-            let re = match eval_expr(r, var_hmap) {
-                Val::Bool(val) => {
-                    val
-                }
-                _ => {
-                    panic!("typechecking fucked up")
-                }
-            };
-            match ubop {
-                UBOp::Not => {
-                    Val::Bool(!re)
-                }
-            }
-        }
-        Expr::Comp(l, (_, comp), r) => {
-            let (le, re) = (eval_expr(l, var_hmap),eval_expr(r, var_hmap));
-            match (le, re) {
-                (Val::Bool(_), Val::Bool(_)) => {}
-                (Val::Int(_), Val::Int(_)) => {}
-                _ => {
-                    panic!("typechecking fucked up")
-                }
-            };
-            match comp {
-                Comp::Equal => {
-                    Val::Bool(le == re)
-                }
-                Comp::NotEqual => {
-                    Val::Bool(le != re)
-                }
-            }
-        }
-        Expr::VarRef(st) => {
-            let (x,_) = var_hmap.get(st).unwrap();
-            *x
-        }
-    }
-}
 
-fn build_fn_hash<'a>(i: &'a SpanStatement, mut hm: HashMap<String, &'a Statement<'a>>) -> HashMap<String, &'a Statement<'a>> {
-    let (_, stmnt) = i;
+fn build_fn_hash_test<'a>(stmnt: Statement<'a>, hm: &mut HashMap<String, (Type, Statement<'a>, Statement<'a>)>){
     match stmnt {
-        Statement::FDef(st, _, _, _) => {
-            hm.insert((&st).to_owned().to_string(), stmnt);
-            return hm;
+        Statement::FDef(name, s_type, s_par, s_st) => {
+            hm.insert(name, (s_type.1, s_par.1, s_st.1));
         }
         Statement::Node(l,r) => {
-            hm = build_fn_hash(l, hm);
-            hm = build_fn_hash(r, hm);
-
-            return hm;
+            build_fn_hash_test(l.1, hm);
+            build_fn_hash_test(r.1, hm);
         }
         _ => {
             panic!("not function or node")
         }
     }
 
-}fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>, s_arg: &SpanStatement) -> Val {
-    let mut var_hmap: HashMap<String, (Val, &Type)> = HashMap::new();
-    let fnc = fn_hmap.get(fn_name).unwrap();
-    let fn_par: &SpanStatement;
-    let fn_body: &SpanStatement;
-    let fn_type: &SpanType;
-    match fnc {
-        Statement::FDef(_, t, par, body) => {
-            fn_par = par;
-            fn_body = body;
-            fn_type = t;
-        }
-        _ => {
-            panic!("build_fn_hash f'd up");
-        }
-    }
-    let (_, t) = fn_type;
-    var_hmap.insert("return".to_owned(), (Val::Nil, t));
+}
 
-    dec_param(fn_hmap, &mut var_hmap, fn_par, s_arg);
-    interpret_statement(fn_hmap, &mut var_hmap, fn_body);
 
-    let (ret,_) = var_hmap.get("return").unwrap();
+fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, (Type, Statement, Statement)>) -> Val {
+    let mut env = Env {var_hmap: HashMap::new(), parent_env: None};
+    let (fn_type, fn_par, fn_body) = fn_hmap.get(fn_name).unwrap();
+    
+    env.var_hmap.insert("return".to_owned(), (Val::Nil, *fn_type));
+
+    &mut env.interpret_statement(fn_hmap, fn_body);
+
+    let (ret,_) = env.var_hmap.get("return").unwrap();
     return *ret
 }
 
-fn dec_param<'a>(fn_hmap: &HashMap<String, &Statement>, var_hmap: &mut HashMap<String, (Val, &'a Type)>, s_param: &'a SpanStatement, s_arg: &SpanStatement){
-    let (_, param) = s_param;
-    let (_, arg) = s_arg;
-    let v: Val;
-    match (param,arg) {
-        (Statement::Nil, Statement::Nil) => {
-            return
-        }
-        (Statement::Node(lp, rp), Statement::Node(la, ra)) => {
-            dec_param(fn_hmap, var_hmap, lp, la);
-            dec_param(fn_hmap, var_hmap, rp, ra);
-        }
-        (Statement::VarDec(name, ts,_),arg) => {
-            let (_,t) = ts;
-            match arg {
-                Statement::Expr(_) | Statement::FCall(_,_) => {
-                    v = eval_fcall_or_expr(fn_hmap, var_hmap, s_arg)
+struct Env<'a> {
+    var_hmap: HashMap<String, (Val, Type)>,
+    parent_env: Option<&'a mut Env<'a>>
+}
+
+
+impl Env<'_> {
+    fn interpret_statement(&mut self, fn_hmap: &HashMap<String, (Type, Statement, Statement)>, body: &Statement){
+        match body {
+            Statement::Expr(e) => {
+                self.eval_expr(e);
+            }
+            Statement::VarDec(name,t,s) => {
+                let (_,at) = t;
+                self.var_hmap.insert(name.to_owned(), (self.eval_fcall_or_expr(fn_hmap, s),*at));
+            }
+            Statement::VarAssign(name,s) => {
+                self.interpret_var_assign(fn_hmap, name, s);
+            }
+            Statement::Node(l,r) => {
+                
+                self.interpret_statement(fn_hmap, &l.1);
+                self.interpret_statement(fn_hmap, &r.1);
+            }
+            Statement::FCall(name, s_arg) => {
+                interpret_fn(name, fn_hmap);
+            }
+            Statement::Return(s) => {
+                let (_, t) = self.var_hmap.get("return").unwrap();
+                self.var_hmap.insert("return".to_owned(), (self.eval_fcall_or_expr(fn_hmap, s), *t));
+            }
+            Statement::Condition(cond_s, if_s, else_s) => {
+                let c_eval: bool;
+                match self.eval_fcall_or_expr(fn_hmap, cond_s) {
+                    Val::Int(v) => {
+                        c_eval = v > 0;
+                    }
+                    Val::Bool(v) => {
+                        c_eval = v;
+                    }
+                    _ => {
+                        panic!("condition evaluated to Nil")
+                    }
                 }
-                _ => {
-                    panic!("f'd argument")
+                let mut new_env = Env {var_hmap: HashMap::new(), parent_env: Some(self)};
+                let temp_s: &Statement;
+                if c_eval {
+                    temp_s = &if_s.1;
+                }else{
+                    temp_s = &else_s.1;
+                }
+                &mut new_env.interpret_statement(fn_hmap, temp_s);
+                
+            }
+            Statement::Nil => {return}
+            _ => { // does not support loops and ifs yet
+                panic!("Does not interpret FDef")
+            }
+        }
+    }
+
+    fn interpret_var_assign(&mut self, fn_hmap: &HashMap<String, (Type, Statement, Statement)>, name: &str, s: &SpanStatement) {
+        match self.var_hmap.get(name) {
+                Option::Some((_,t)) => {
+                    self.var_hmap.insert(name.to_owned(), (self.eval_fcall_or_expr(fn_hmap, s), *t));
+                }
+                Option::None => {
+                    self.parent_env.as_mut().unwrap().interpret_var_assign(fn_hmap, name, s);
                 }
             }
-            var_hmap.insert(name.to_owned(), (v,t));
-        }
-        (_,_) => {
-            panic!("Bad argument")
+            let (_, t) = self.var_hmap.get(name).unwrap();
+            let v = self.eval_fcall_or_expr(fn_hmap, s);
+            self.var_hmap.insert(name.to_owned(), (v, *t));
+    }
+
+    fn eval_fcall_or_expr(&self,fn_hmap: &HashMap<String, (Type, Statement, Statement)>, body: &SpanStatement) -> Val {
+        let (_, s) = body;
+        match s {
+            Statement::Expr(e) => {
+                return self.eval_expr(e);
+            }
+            Statement::FCall(st, _) => {
+                return interpret_fn(&st, fn_hmap)
+            }
+            Statement::Return(ss) => {
+                self.eval_fcall_or_expr(fn_hmap, ss)
+            }
+            _ => {
+                panic!("Can only take expr, fcall or return as argument")
+            }
         }
     }
-}
 
-fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, var_hmap: &mut HashMap<String, (Val, &'a Type)>, body: &'a SpanStatement){
-    let (_, bdy) = body; // remove span
-    match bdy {
-        Statement::Expr(e) => {
-            eval_expr(e, var_hmap);
-        }
-        Statement::VarDec(name,t,s) => {
-            let (_,at) = t;
-            var_hmap.insert(name.to_owned(), (eval_fcall_or_expr(fn_hmap, var_hmap, s),at));
-        }
-        Statement::VarAssign(name,s) => {
-            let (_, t) = var_hmap.get(name).unwrap();
-            let v = eval_fcall_or_expr(fn_hmap, var_hmap, s);
-            var_hmap.insert(name.to_owned(), (v, t));
-        }
-        Statement::Node(l,r) => {
-            interpret_statement(fn_hmap, var_hmap, l);
-            interpret_statement(fn_hmap, var_hmap, r);
-        }
-        Statement::FCall(name, s_arg) => {
-            interpret_fn(name, fn_hmap, s_arg);
-        }
-        Statement::Return(s) => {
-            let (_, t) = var_hmap.get("return").unwrap();
-            var_hmap.insert("return".to_owned(), (eval_fcall_or_expr(fn_hmap, var_hmap, s), t));
-        }
-        _ => { // does not support loops and ifs yeet
-            panic!("Does not interpret FDef and Nil") 
+    fn eval_expr(&self, i: &SpanExpr) -> Val {
+        let (_,e) = i;
+        match e {
+            Expr::Num(v) => {
+                Val::Int(*v)
+            }
+            Expr::Val(v) => {
+                Val::Bool(*v)
+            }
+            Expr::BinOp(l, (_, op), r) => {
+                let (le, re) = match (self.eval_expr(l),self.eval_expr(r)) {
+                    (Val::Int(val), Val::Int(val2)) => {
+                        (val, val2)
+                    }
+                    _ => {
+                        panic!("typechecking fucked up")
+                    }
+                };
+                match op {
+                    Op::Add => { Val::Int(le + re) }
+                    Op::Mul => { Val::Int(le * re) }
+                    Op::Div => { Val::Int(le / re) }
+                    Op::Mod => { Val::Int(le % re) }
+                }
+            }
+            Expr::UOp((_, uop), r) => {
+                let re = match self.eval_expr(r) {
+                    Val::Int(val) => {
+                        val
+                    }
+                    _ => {
+                        panic!("typechecking fucked up")
+                    }
+                };
+                match uop {
+                    UOp::Neg => {
+                        Val::Int(-re)
+                    }
+                }
+            }
+            Expr::BinBOp(l, (_, bop), r) => {
+                let (le, re) = match (self.eval_expr(l),self.eval_expr(r)) {
+                    (Val::Bool(val), Val::Bool(val2)) => {
+                        (val, val2)
+                    }
+                    _ => {
+                        panic!("typechecking fucked up")
+                    }
+                };
+                match bop {
+                    BOp::And => {
+                        Val::Bool(le && re)
+                    }
+                    BOp::Or => {
+                        Val::Bool(le || re)
+                    }
+                }
+            }
+            Expr::UBOp((_, ubop), r) => {
+                let re = match self.eval_expr(r) {
+                    Val::Bool(val) => {
+                        val
+                    }
+                    _ => {
+                        panic!("typechecking fucked up")
+                    }
+                };
+                match ubop {
+                    UBOp::Not => {
+                        Val::Bool(!re)
+                    }
+                }
+            }
+            Expr::Comp(l, (_, comp), r) => {
+                let (le, re) = (self.eval_expr(l),self.eval_expr(r));
+                match (le, re) {
+                    (Val::Bool(_), Val::Bool(_)) => {}
+                    (Val::Int(_), Val::Int(_)) => {}
+                    _ => {
+                        panic!("typechecking fucked up")
+                    }
+                };
+                match comp {
+                    Comp::Equal => {
+                        Val::Bool(le == re)
+                    }
+                    Comp::NotEqual => {
+                        Val::Bool(le != re)
+                    }
+                }
+            }
+            Expr::VarRef(st) => {
+                self.eval_var_ref(st)
+            }
         }
     }
-}
 
-fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, var_hmap: &HashMap<String, (Val, &Type)>, body: &SpanStatement) -> Val {
-    let (_, s) = body;
-    match s {
-        Statement::Expr(e) => {
-            return eval_expr(e, var_hmap);
+    fn eval_var_ref(&self, s: &str) -> Val{
+        match self.var_hmap.get(s) {
+            Option::Some((x,_)) => {
+                *x
+            }
+            Option::None => {
+                self.parent_env.as_ref().unwrap().eval_var_ref(s)
+            }
         }
-        Statement::FCall(st, arg) => {
-            return interpret_fn(&st, fn_hmap, arg)
-        }
-        Statement::Return(ss) => {
-            eval_fcall_or_expr(fn_hmap, var_hmap, ss)
-        }
-        _ => {
-            panic!("Can only take expr, fcall or return as argument")
-        }
+        
     }
 }
 
 
 fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}"
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}")).unwrap();
-    let mut hash_map = HashMap::new();
-    let ss: SpanStatement = (Span::new(""), Statement::Nil);
-    println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &ss));
+    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32 {let a : i32 = f2();a} fn f2() -> i32 {return 5}")).unwrap();
+    //println!("{:?} ", e);
+    let mut hash_map: HashMap<String, (Type, Statement, Statement)> = HashMap::new();
+    build_fn_hash_test(e, &mut hash_map);
+    println!("{:?}", interpret_fn("f1", &hash_map));
 }
 
 // In this example, we have a `parse_expr_ms` is the "top" level parser.
