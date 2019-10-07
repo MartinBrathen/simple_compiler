@@ -772,228 +772,361 @@ fn build_fn_hash_test<'a>(stmnt: Statement<'a>, hm: &mut HashMap<String, (Type, 
 }
 
 
-fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, (Type, Statement, Statement)>) -> Val {
-    let mut env = Env {var_hmap: HashMap::new(), parent_env: None};
-    let (fn_type, fn_par, fn_body) = fn_hmap.get(fn_name).unwrap();
-    
-    env.var_hmap.insert("return".to_owned(), (Val::Nil, *fn_type));
+fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
+    let (_,e) = i;
+    match e {
+        Expr::Num(v) => {
+            Val::Int(*v)
+        }
+        Expr::Val(v) => {
+            Val::Bool(*v)
+        }
+        Expr::BinOp(l, (_, op), r) => {
+            let (le, re) = match (eval_expr(l, env),eval_expr(r, env)) {
+                (Val::Int(val), Val::Int(val2)) => {
+                    (val, val2)
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match op {
+                Op::Add => { Val::Int(le + re) }
+                Op::Mul => { Val::Int(le * re) }
+                Op::Div => { Val::Int(le / re) }
+                Op::Mod => { Val::Int(le % re) }
+            }
+        }
+        Expr::UOp((_, uop), r) => {
+            let re = match eval_expr(r, env) {
+                Val::Int(val) => {
+                    val
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match uop {
+                UOp::Neg => {
+                    Val::Int(-re)
+                }
+            }
+        }
+        Expr::BinBOp(l, (_, bop), r) => {
+            let (le, re) = match (eval_expr(l, env),eval_expr(r, env)) {
+                (Val::Bool(val), Val::Bool(val2)) => {
+                    (val, val2)
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match bop {
+                BOp::And => {
+                    Val::Bool(le && re)
+                }
+                BOp::Or => {
+                    Val::Bool(le || re)
+                }
+            }
+        }
+        Expr::UBOp((_, ubop), r) => {
+            let re = match eval_expr(r, env) {
+                Val::Bool(val) => {
+                    val
+                }
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match ubop {
+                UBOp::Not => {
+                    Val::Bool(!re)
+                }
+            }
+        }
+        Expr::Comp(l, (_, comp), r) => {
+            let (le, re) = (eval_expr(l, env),eval_expr(r, env));
+            match (le, re) {
+                (Val::Bool(_), Val::Bool(_)) => {}
+                (Val::Int(_), Val::Int(_)) => {}
+                _ => {
+                    panic!("typechecking fucked up")
+                }
+            };
+            match comp {
+                Comp::Equal => {
+                    Val::Bool(le == re)
+                }
+                Comp::NotEqual => {
+                    Val::Bool(le != re)
+                }
+            }
+        }
+        Expr::VarRef(st) => {
+            let i = env.len()-1;
+            var_ref(st,i, env)
+            
+        }
+    }
+}
 
-    &mut env.interpret_statement(fn_hmap, fn_body);
+fn var_ref(name: &str, i:usize, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
+    match env[i].get(name) {
+        Some((v,_)) => {
+            *v
+        }
+        None => {
+            if i > 0 {
+                var_ref(name, i-1, env)
+            }else{
+                panic!("var not found")
+            }
 
-    let (ret,_) = env.var_hmap.get("return").unwrap();
+        }
+    }
+}
+
+fn build_fn_hash<'a>(i: &'a SpanStatement, mut hm: HashMap<String, &'a Statement<'a>>) -> HashMap<String, &'a Statement<'a>> {
+    let (_, stmnt) = i;
+    match stmnt {
+        Statement::FDef(st, _, _, _) => {
+            hm.insert((&st).to_owned().to_string(), stmnt);
+            return hm;
+        }
+        Statement::Node(l,r) => {
+            hm = build_fn_hash(l, hm);
+            hm = build_fn_hash(r, hm);
+
+            return hm;
+        }
+        _ => {
+            panic!("not function or node")
+        }
+    }
+
+}fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>, args: &mut Vec<Val>) -> Val {
+    let mut env: Vec<HashMap<String, (Val, Type)>>  = Vec::new();
+    env.push(HashMap::new());
+    let i = env.len()-1;
+    let fnc = fn_hmap.get(fn_name).unwrap();
+    let fn_par: &SpanStatement;
+    let fn_body: &SpanStatement;
+    let fn_type: &SpanType;
+    match fnc {
+        Statement::FDef(_, t, par, body) => {
+            fn_par = par;
+            fn_body = body;
+            fn_type = t;
+        }
+        _ => {
+            panic!("build_fn_hash f'd up");
+        }
+    }
+    let (_, t) = fn_type;
+    env[i].insert("return".to_owned(), (Val::Nil, *t));
+
+    dec_param(fn_hmap, &mut env, fn_par, args);
+    interpret_statement(fn_hmap, &mut env, fn_body);
+    println!("do i get here?");
+    let (ret,_) = env[env.len()-1].get("return").unwrap();
     return *ret
 }
 
-struct Env<'a> {
-    var_hmap: HashMap<String, (Val, Type)>,
-    parent_env: Option<&'a mut Env<'a>>
+fn dec_param<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, s_param: &'a SpanStatement, args: &mut Vec<Val>){
+    let i = env.len()-1;
+    let (_, param) = s_param;
+    match param {
+        Statement::Nil => {
+            return
+        }
+        Statement::Node(lp, rp) => {
+            dec_param(fn_hmap, env, rp, args);
+            dec_param(fn_hmap, env, lp, args);
+        }
+        Statement::VarDec(name, ts,_) => {
+            let (_,t) = ts;
+            let v = args.pop().unwrap();
+            match v {
+                Val::Bool(_) => {
+                    if t == &Type::Bool{
+                        env[i].insert(name.to_owned(), (v,*t));
+                    }else {
+                        panic!("type missmatch");
+                    }
+                }
+                Val::Int(_) => {
+                    if t == &Type::Int{
+                        env[i].insert(name.to_owned(), (v,*t));
+                    }else {
+                        panic!("type missmatch");
+                    }
+                }
+                Val::Nil => {
+                    panic!("Nil argument not allowed");
+                }
+            }
+        }
+        _ => {
+            panic!("Bad argument")
+        }
+    }
 }
 
-
-impl Env<'_> {
-    fn interpret_statement(&mut self, fn_hmap: &HashMap<String, (Type, Statement, Statement)>, body: &Statement){
-        match body {
-            Statement::Expr(e) => {
-                self.eval_expr(e);
-            }
-            Statement::VarDec(name,t,s) => {
-                let (_,at) = t;
-                self.var_hmap.insert(name.to_owned(), (self.eval_fcall_or_expr(fn_hmap, s),*at));
-            }
-            Statement::VarAssign(name,s) => {
-                self.interpret_var_assign(fn_hmap, name, s);
-            }
-            Statement::Node(l,r) => {
-                
-                self.interpret_statement(fn_hmap, &l.1);
-                self.interpret_statement(fn_hmap, &r.1);
-            }
-            Statement::FCall(name, s_arg) => {
-                interpret_fn(name, fn_hmap);
-            }
-            Statement::Return(s) => {
-                let (_, t) = self.var_hmap.get("return").unwrap();
-                self.var_hmap.insert("return".to_owned(), (self.eval_fcall_or_expr(fn_hmap, s), *t));
-            }
-            Statement::Condition(cond_s, if_s, else_s) => {
-                let c_eval: bool;
-                match self.eval_fcall_or_expr(fn_hmap, cond_s) {
-                    Val::Int(v) => {
-                        c_eval = v > 0;
-                    }
-                    Val::Bool(v) => {
-                        c_eval = v;
-                    }
-                    _ => {
-                        panic!("condition evaluated to Nil")
-                    }
-                }
-                let mut new_env = Env {var_hmap: HashMap::new(), parent_env: Some(self)};
-                let temp_s: &Statement;
-                if c_eval {
-                    temp_s = &if_s.1;
-                }else{
-                    temp_s = &else_s.1;
-                }
-                &mut new_env.interpret_statement(fn_hmap, temp_s);
-                
-            }
-            Statement::Nil => {return}
-            _ => { // does not support loops and ifs yet
-                panic!("Does not interpret FDef")
+fn var_ass(name: &str, v: Val, env: &mut Vec<HashMap<String, (Val, Type)>>, i: usize){
+    let temp = env[i].get(name);
+    let temp_type: Type;
+    match temp {
+        Some((_, t)) => {
+            temp_type = *t;
+            env[i].insert(name.to_owned(), (v, temp_type));
+        }
+        None => {
+            if i > 0 {
+                var_ass(name, v, env, i-1);
+            }else {
+                panic!("Variable does not exist")
             }
         }
     }
+}
 
-    fn interpret_var_assign(&mut self, fn_hmap: &HashMap<String, (Type, Statement, Statement)>, name: &str, s: &SpanStatement) {
-        match self.var_hmap.get(name) {
-                Option::Some((_,t)) => {
-                    self.var_hmap.insert(name.to_owned(), (self.eval_fcall_or_expr(fn_hmap, s), *t));
-                }
-                Option::None => {
-                    self.parent_env.as_mut().unwrap().interpret_var_assign(fn_hmap, name, s);
-                }
-            }
-            let (_, t) = self.var_hmap.get(name).unwrap();
-            let v = self.eval_fcall_or_expr(fn_hmap, s);
-            self.var_hmap.insert(name.to_owned(), (v, *t));
-    }
-
-    fn eval_fcall_or_expr(&self,fn_hmap: &HashMap<String, (Type, Statement, Statement)>, body: &SpanStatement) -> Val {
-        let (_, s) = body;
-        match s {
-            Statement::Expr(e) => {
-                return self.eval_expr(e);
-            }
-            Statement::FCall(st, _) => {
-                return interpret_fn(&st, fn_hmap)
-            }
-            Statement::Return(ss) => {
-                self.eval_fcall_or_expr(fn_hmap, ss)
-            }
-            _ => {
-                panic!("Can only take expr, fcall or return as argument")
-            }
+fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, body: &'a SpanStatement){
+    let i = env.len()-1;
+    let (_, bdy) = body; // remove span
+    match bdy {
+        Statement::Expr(e) => {
+            eval_expr(e, env);
         }
-    }
-
-    fn eval_expr(&self, i: &SpanExpr) -> Val {
-        let (_,e) = i;
-        match e {
-            Expr::Num(v) => {
-                Val::Int(*v)
-            }
-            Expr::Val(v) => {
-                Val::Bool(*v)
-            }
-            Expr::BinOp(l, (_, op), r) => {
-                let (le, re) = match (self.eval_expr(l),self.eval_expr(r)) {
-                    (Val::Int(val), Val::Int(val2)) => {
-                        (val, val2)
-                    }
-                    _ => {
-                        panic!("typechecking fucked up")
-                    }
-                };
-                match op {
-                    Op::Add => { Val::Int(le + re) }
-                    Op::Mul => { Val::Int(le * re) }
-                    Op::Div => { Val::Int(le / re) }
-                    Op::Mod => { Val::Int(le % re) }
-                }
-            }
-            Expr::UOp((_, uop), r) => {
-                let re = match self.eval_expr(r) {
-                    Val::Int(val) => {
-                        val
-                    }
-                    _ => {
-                        panic!("typechecking fucked up")
-                    }
-                };
-                match uop {
-                    UOp::Neg => {
-                        Val::Int(-re)
-                    }
-                }
-            }
-            Expr::BinBOp(l, (_, bop), r) => {
-                let (le, re) = match (self.eval_expr(l),self.eval_expr(r)) {
-                    (Val::Bool(val), Val::Bool(val2)) => {
-                        (val, val2)
-                    }
-                    _ => {
-                        panic!("typechecking fucked up")
-                    }
-                };
-                match bop {
-                    BOp::And => {
-                        Val::Bool(le && re)
-                    }
-                    BOp::Or => {
-                        Val::Bool(le || re)
-                    }
-                }
-            }
-            Expr::UBOp((_, ubop), r) => {
-                let re = match self.eval_expr(r) {
-                    Val::Bool(val) => {
-                        val
-                    }
-                    _ => {
-                        panic!("typechecking fucked up")
-                    }
-                };
-                match ubop {
-                    UBOp::Not => {
-                        Val::Bool(!re)
-                    }
-                }
-            }
-            Expr::Comp(l, (_, comp), r) => {
-                let (le, re) = (self.eval_expr(l),self.eval_expr(r));
-                match (le, re) {
-                    (Val::Bool(_), Val::Bool(_)) => {}
-                    (Val::Int(_), Val::Int(_)) => {}
-                    _ => {
-                        panic!("typechecking fucked up")
-                    }
-                };
-                match comp {
-                    Comp::Equal => {
-                        Val::Bool(le == re)
-                    }
-                    Comp::NotEqual => {
-                        Val::Bool(le != re)
-                    }
-                }
-            }
-            Expr::VarRef(st) => {
-                self.eval_var_ref(st)
-            }
+        Statement::VarDec(name,t,s) => {
+            let (_,at) = t;
+            let temp_val: Val = eval_fcall_or_expr(fn_hmap, env, s);
+            env[i].insert(name.to_owned(), (temp_val,*at));
         }
-    }
-
-    fn eval_var_ref(&self, s: &str) -> Val{
-        match self.var_hmap.get(s) {
-            Option::Some((x,_)) => {
-                *x
-            }
-            Option::None => {
-                self.parent_env.as_ref().unwrap().eval_var_ref(s)
-            }
+        Statement::VarAssign(name,s) => {
+            let v = eval_fcall_or_expr(fn_hmap, env, s);
+            var_ass(name, v, env, i);
         }
-        
+        Statement::Node(l,r) => {
+            interpret_statement(fn_hmap, env, l);
+            interpret_statement(fn_hmap, env, r);
+        }
+        Statement::FCall(name, s_arg) => {
+            let mut vec: Vec<Val> = Vec::new();
+            eval_arg(fn_hmap, s_arg, env, &mut vec);
+            interpret_fn(name, fn_hmap, &mut vec);
+        }
+        Statement::Return(s) => {
+            println!("{:?}",&s);
+            let (_, t) = *env[0].get("return").unwrap();
+            let temp_val: Val = eval_fcall_or_expr(fn_hmap, env, s);
+            env[0].insert("return".to_owned(), (temp_val, t));
+            return;
+        }
+        Statement::Condition(s_cond, s_if, s_else) => {
+            let c_val = eval_fcall_or_expr(fn_hmap, env, s_cond);
+            let cond: bool;
+            match c_val {
+                Val::Bool(v) =>{
+                    cond = v;
+                }
+                Val::Int(v) => {
+                    cond = v > 0;
+                }
+                _ => {
+                    panic!("Nil is not boolean")
+                }
+            }
+            env.push(HashMap::new());
+            if cond {
+                interpret_statement(fn_hmap, env, s_if);
+            }else{
+                interpret_statement(fn_hmap, env, s_else);
+            }
+            env.pop();
+        }
+        Statement::WhileLoop(s_cond, s_loop) => {
+            env.push(HashMap::new());
+            interpret_while(fn_hmap, env, s_loop, s_cond);
+            env.pop();
+        }
+        Statement::Nil => {
+            return;
+        }
+        _ => { // does not support loops and ifs yeet
+            panic!("Does not interpret FDef and Nil") 
+        }
     }
 }
 
 
-fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}"
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32 {let a : i32 = f2();a} fn f2() -> i32 {return 5}")).unwrap();
-    //println!("{:?} ", e);
-    let mut hash_map: HashMap<String, (Type, Statement, Statement)> = HashMap::new();
-    build_fn_hash_test(e, &mut hash_map);
-    println!("{:?}", interpret_fn("f1", &hash_map));
+fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, s_loop: &SpanStatement, s_cond: &SpanStatement) {
+    let c_val = eval_fcall_or_expr(fn_hmap, env, s_cond);
+    let cond: bool;
+    match c_val {
+        Val::Bool(v) =>{
+            cond = v;
+        }
+        Val::Int(v) => {
+            cond = v > 0;
+        }
+        _ => {
+            panic!("Nil is not boolean")
+        }
+    }
+    if cond {
+        interpret_statement(fn_hmap, env, s_loop);
+        interpret_while(fn_hmap, env, s_loop, s_cond);
+    }else {
+        return
+    }
+}
+
+fn eval_arg(fn_hmap: &HashMap<String, &Statement>, s_arg: &SpanStatement, env: &Vec<HashMap<String, (Val, Type)>>, vec: &mut Vec<Val>) {
+    match &s_arg.1 {
+        Statement::Expr(_) | Statement::FCall(_,_) => {
+            vec.push(eval_fcall_or_expr(fn_hmap, env, s_arg));
+        }
+        Statement::Node(l, r) => {
+            eval_arg(fn_hmap, &l, env, vec);
+            eval_arg(fn_hmap, &r, env, vec);
+        }
+        _ => {
+            panic!("invalid arguments");
+        }
+    }
+
+}
+
+
+fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, env: &Vec<HashMap<String, (Val, Type)>>, body: &SpanStatement) -> Val {
+    let (_, s) = body;
+    match s {
+        Statement::Expr(e) => {
+            return eval_expr(e, env);
+        }
+        Statement::FCall(st, arg) => {
+            let mut vec: Vec<Val> = Vec::new();
+            eval_arg(fn_hmap, arg, env, &mut vec);
+            return interpret_fn(&st, fn_hmap, &mut vec)
+        }
+        Statement::Return(ss) => {
+            eval_fcall_or_expr(fn_hmap, env, ss)
+        }
+        _ => {
+            panic!("Can only take expr, fcall or return as argument")
+        }
+    }
+}
+
+
+fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
+            // "fn f1() -> i32 {if true {return 1}}"
+    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let arg : i32 = 5;let a : i32 = f2(5,arg); a} fn f2(x: i32, y: i32) -> i32{return x*2 + y}")).unwrap();
+    //println!("{:?} ", e)
+    let hash_map = HashMap::new();
+    let mut args: Vec<Val> = Vec::new();
+    println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
 }
 
 // In this example, we have a `parse_expr_ms` is the "top" level parser.
@@ -1005,4 +1138,5 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
 //
 // The extra field is not used, it can be used for metadata, such as filename.
 
-// TODO: Fix nicer parentheses handling
+// TODO: Fix return parsing(low prio)
+// Bug: (x+1)*2 gave error
