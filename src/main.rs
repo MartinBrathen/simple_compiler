@@ -1,4 +1,19 @@
+#![allow(unused_imports)]
+#![allow(dead_code)]
 extern crate nom;
+
+use inkwell::{
+    builder::Builder,
+    context::Context,
+    execution_engine::{ExecutionEngine, JitFunction},
+    module::Module,
+    passes::PassManager,
+    types::BasicTypeEnum,
+    values::{BasicValueEnum, FloatValue, FunctionValue, InstructionValue, IntValue, PointerValue},
+    FloatPredicate, OptimizationLevel, IntPredicate,
+};
+
+use std::error::Error;
 
 use nom::{
     branch::alt,
@@ -392,7 +407,7 @@ pub enum Statement<'a> {
 
 type SpanStatement<'a> = (Span<'a>, Statement<'a>);
 
-fn parse_outer_statement(i: Span) -> IResult<Span, SpanStatement> {
+pub fn parse_outer_statement(i: Span) -> IResult<Span, SpanStatement> {
     preceded(multispace0, alt((
         // -------- fn def
             map(
@@ -520,7 +535,7 @@ fn parse_var_assign(i: Span) -> IResult<Span, SpanStatement>{
     )(i)
 }
 
-fn parse_brackets(i: Span) -> IResult<Span, SpanStatement>{
+pub fn parse_brackets(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0, terminated(preceded(tag("{"), parse_statement),preceded(multispace0,tag("}"))))(i)
 }
 
@@ -1120,23 +1135,222 @@ fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, env: &Vec<HashMap<S
 }
 
 
-fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
-            // "fn f1() -> i32 {if true {return 1}}"
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let arg : i32 = 5;let a : i32 = f2(5,arg); a} fn f2(x: i32, y: i32) -> i32{return x*2 + y}")).unwrap();
-    //println!("{:?} ", e)
-    let hash_map = HashMap::new();
-    let mut args: Vec<Val> = Vec::new();
-    println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
+// fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
+//             // "fn f1() -> i32 {if true {return 1}}"
+//     let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let arg : i32 = 5;let a : i32 = f2(5,arg); a} fn f2(x: i32, y: i32) -> i32{return x*2 + y}")).unwrap();
+//     //println!("{:?} ", e)
+//     let hash_map = HashMap::new();
+//     let mut args: Vec<Val> = Vec::new();
+//     println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
+// }
+
+// compiler
+//
+//
+//
+
+
+
+type ExprFunc = unsafe extern "C" fn() -> i32;
+
+/*fn main() -> Result<(), Box<dyn Error>> {
+    let context = Context::create();
+    let module = context.create_module("expr");
+    let builder = context.create_builder();
+    let fpm = PassManager::create(&module);
+    fpm.initialize();
+    let execution_engine = module.create_jit_execution_engine(OptimizationLevel::None)?;
+
+    match parse_brackets(Span::new(
+        "
+        {
+            let abba : mut i32 = 7;
+            abba = 5;
+            return  2 + abba
+        }
+        ",
+    )) {
+        Ok((_, prog)) => {
+            println!("ast : {:?}", &prog);
+            let u32_type = context.i32_type();
+            let fn_type = u32_type.fn_type(&[], false);
+            let function = module.add_function("expr", fn_type, None);
+            let basic_block = context.append_basic_block(&function, "entry");
+            builder.position_at_end(&basic_block);
+
+            let mut compiler = Compiler {
+                context: &context,
+                builder: &builder,
+                module: &module,
+                fn_value_opt: Some(function),
+                variables: HashMap::new(),
+                //&fpm,
+            };
+            compiler.compile_block(prog);
+            let fun_expr: JitFunction<ExprFunc> =
+                unsafe { execution_engine.get_function("expr").ok().unwrap() };
+
+            unsafe {
+                println!("\nexecution result : {}", fun_expr.call());
+            }
+        }
+        _ => panic!(),
+    }
+    module.print_to_stderr();
+
+    Ok(())
+}*/
+
+/// Compiler holds the LLVM state for the compilation
+pub struct Compiler<'a> {
+    pub context: &'a Context,
+    pub builder: &'a Builder,
+    // pub fpm: &'a PassManager<FunctionValue>,
+    pub module: &'a Module,
+    // pub function: &'a Func<'a>,
+    variables: HashMap<String, PointerValue>,
+    fn_value_opt: Option<FunctionValue>,
 }
 
-// In this example, we have a `parse_expr_ms` is the "top" level parser.
-// It consumes white spaces, allowing the location information to reflect the exact
-// positions in the input file.
-//
-// The dump_expr will create a pretty printing of the expression with spans for
-// each terminal. This will be useful for later for precise type error reporting.
-//
-// The extra field is not used, it can be used for metadata, such as filename.
+/// Compilation assumes the program to be semantically correct (well formed)
+impl<'a> Compiler<'a> {
+    /// Gets a defined function given its name.
+    #[inline]
+    fn get_function(&self, name: &str) -> Option<FunctionValue> {
+        self.module.get_function(name)
+    }
 
-// TODO: Fix return parsing(low prio)
-// Bug: (x+1)*2 gave error
+    /// Returns the `PointerValue` representing the variable `id`.
+    #[inline]
+    fn get_variable(&self, id: &str) -> &PointerValue {
+        match self.variables.get(id) {
+            Some(var) => var,
+            None => panic!(
+                "Could not find a matching variable, {} in {:?}",
+                id, self.variables
+            ),
+        }
+    }
+
+    /// Returns the `FunctionValue` representing the function being compiled.
+    #[inline]
+    fn fn_value(&self) -> FunctionValue {
+        self.fn_value_opt.unwrap()
+    }
+
+    /// For now, returns an IntValue
+    /// Boolean is i1, single bit integers in LLVM
+    /// However we might to choose to store them as i8 or i32
+    fn compile_expr(&self, expr: &SpanExpr) -> IntValue {
+        match &expr.1 {
+            Expr::VarRef(s) => {
+                let var = self.get_variable(&s);
+                return self.builder.build_load(*var, &s).into_int_value();
+            }
+            Expr::Num(i) => self.context.i32_type().const_int(i.to_owned() as u64, false),
+
+            Expr::BinOp(l, (_, op), r) => {
+                let lv = self.compile_expr(&l);
+                let rv = self.compile_expr(&r);
+                match op {
+                    Op::Add => self.builder.build_int_add(lv, rv, "sum"),
+                    Op::Div => self.builder.build_int_signed_div(lv, rv, "div"),
+                    Op::Mul => self.builder.build_int_mul(lv, rv, "prod"),
+                    Op::Mod => self.builder.build_int_signed_rem(lv, rv, "mod"),
+                }
+            }
+            Expr::BinBOp(l, (_, op), r) => {
+                let lv = self.compile_expr(&l);
+                let rv = self.compile_expr(&r);
+                match op {
+                    BOp::And => self.builder.build_and(lv, rv, "and"),
+                    BOp::Or => self.builder.build_or(lv, rv, "or"),
+                }
+            }
+            Expr::Comp(l, (_, op), r) => {
+                let lv = self.compile_expr(&l);
+                let rv = self.compile_expr(&r);
+                match op {
+                    Comp::Equal => self.builder.build_int_compare(inkwell::IntPredicate::EQ, lv, rv, "eq"),
+                    Comp::NotEqual => self.builder.build_int_compare(inkwell::IntPredicate::NE, lv, rv, "eq"),
+                }
+            }
+            Expr::UBOp((_, op), r) => {
+                let rv = self.compile_expr(&r);
+                match op {
+                    UBOp::Not => self.builder.build_not(rv, "not"),
+                }
+            }
+            Expr::UOp((_, op), r) => {
+                let rv = self.compile_expr(&r);
+                match op {
+                    UOp::Neg => self.builder.build_int_neg(rv, "neg"),
+                }
+            }
+            Expr::Val(b) => self.context.bool_type().const_int(b.to_owned() as u64, false),
+            
+            //_ => unimplemented!(),
+        }
+    }
+
+    /// Creates a new stack allocation instruction in the entry block of the function.
+    fn create_entry_block_alloca(&mut self, name: &str) -> PointerValue {
+        let builder = self.context.create_builder();
+
+        let entry = self.fn_value().get_first_basic_block().unwrap();
+
+        match entry.get_first_instruction() {
+            Some(first_instr) => builder.position_before(&first_instr),
+            None => builder.position_at_end(&entry),
+        }
+        let alloca = builder.build_alloca(self.context.i32_type(), name);
+        self.variables.insert(name.to_string(), alloca);
+        alloca
+    }
+
+    /// Compiles a command into (InstructionValue, b:bool)
+    /// `b` indicates that its a return value of the basic block
+    fn compile_statement(&mut self, statement: &SpanStatement) -> (InstructionValue, bool) {
+        match &statement.1 {
+            Statement::Expr(se) => {
+                (self.compile_expr(se).as_instruction().unwrap(),false)
+            }
+            Statement::VarAssign(name, stmnt) => {
+                let var = self.get_variable(&name);
+                let rexp = self.compile_statement(&stmnt);
+                (self.builder.build_store(*var, rexp), false)
+            }
+            
+            
+
+            // -- TODO: This is code from my `old` interpreter
+            //     Cmd::If(exp, then_block, opt_else) => {
+            //         if get_bool(eval_expr(exp, mem, venv, fenv)) {
+            //             eval_body(then_block.to_vec(), mem, venv, fenv)
+            //         } else {
+            //             if let Some(else_block) = opt_else {
+            //                 eval_body(else_block.to_vec(), mem, venv, fenv)
+            //             } else {
+            //                 None
+            //             }
+            //         }
+            //     }
+            // -- TODO: While
+            
+            _ => unimplemented!(),
+        }
+    }
+
+    /*pub fn compile_block(&mut self, cmds: Vec<Cmd>) -> InstructionValue {
+        for c in &cmds {
+            let (cmd, ret) = self.compile_cmd(c);
+            // early return (e.g., inside a loop/conditional)
+            if ret {
+                return cmd;
+            }
+        }
+        panic!();
+    }*/
+
+    // TODO, function declarations
+}
