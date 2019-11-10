@@ -1140,7 +1140,7 @@ fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, env: &Vec<HashMap<S
 
 fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
             // "fn f1() -> i32 {if true {return 1}}"
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f2(x: i32, y: i32) -> i32{return x*y} fn f1() -> i32{let a : i32 = f2(5,3); a}")).unwrap();
+    let (_, (s, e)) = parse_outer_statement(Span::new("fn f2(x: i32, y: i32) -> i32{return x*y} fn f1() -> i32{let a : i32 = f2(5,3); return a}")).unwrap();
     //println!("{:?} ", e)
     //let hash_map = HashMap::new();
     //let mut args: Vec<Val> = Vec::new();
@@ -1365,12 +1365,62 @@ impl<'a> Compiler<'a> {
                 self.compile_statement(&rss);
             }
             Statement::Return(ss) => {
-                return self.compile_statement(&ss);
+                self.builder.build_return(Some(&self.compile_expr_or_fcall(&ss)));
+                return;
             }
             Statement::FCall(name, s_arg) => {
                 self.compile_fcall(name, s_arg);
             }
             Statement::Nil => return,
+            Statement::Condition(cond_ss, then_ss, else_ss) => {
+                let parent = self.fn_value();
+                let zero_const = self.context.i32_type().const_int(0,false);
+
+                let cond = self.compile_expr_or_fcall(cond_ss);
+                let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "condition");
+
+                // build branch
+                let then_bb = self.context.append_basic_block(&parent, "then");
+                let else_bb = self.context.append_basic_block(&parent, "else");
+                let cont_bb = self.context.append_basic_block(&parent, "ifcont");
+
+                self.builder.build_conditional_branch(cond, &then_bb, &else_bb);
+
+                // build then block
+                self.builder.position_at_end(&then_bb);
+                self.compile_statement(then_ss);
+                self.builder.build_unconditional_branch(&cont_bb);
+
+                // build else block
+                self.builder.position_at_end(&else_bb);
+                self.compile_statement(else_ss);
+                self.builder.build_unconditional_branch(&cont_bb);
+
+                // emit merge block
+                self.builder.position_at_end(&cont_bb);
+            }
+
+            Statement::WhileLoop(cond_ss, body_ss) => {
+                let parent = self.fn_value();
+                let zero_const = self.context.i32_type().const_int(0,false);
+
+                let cond = self.compile_expr_or_fcall(cond_ss);
+                let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "condition");
+
+                let loop_head_bb = self.context.append_basic_block(&parent, "loophead");
+                let loop_body_bb = self.context.append_basic_block(&parent, "loopbody");
+                let cont_bb = self.context.append_basic_block(&parent, "continue");
+
+                self.builder.build_unconditional_branch(&loop_head_bb);
+                self.builder.position_at_end(&loop_head_bb);
+                self.builder.build_conditional_branch(cond, &loop_body_bb, &cont_bb);
+
+                self.builder.position_at_end(&loop_body_bb);
+                self.compile_statement(body_ss);
+                self.builder.build_unconditional_branch(&loop_head_bb);
+
+                self.builder.position_at_end(&cont_bb);
+            }
             
             
             _ => unimplemented!(),
@@ -1416,7 +1466,6 @@ impl<'a> Compiler<'a> {
         }
     }
     fn compile_fcall(&self, name: &str, s_arg: &SpanStatement) -> IntValue {
-        print!("{:?}", name);
         match self.get_function(name) {
             Some(fun) => {
                 let mut arg_vec: Vec<BasicValueEnum> = Vec::new();
