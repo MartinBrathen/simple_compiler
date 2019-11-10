@@ -8,9 +8,12 @@ use inkwell::{
     execution_engine::{ExecutionEngine, JitFunction},
     module::Module,
     passes::PassManager,
-    types::BasicTypeEnum,
+    types::{BasicTypeEnum, AnyTypeEnum, FunctionType, IntType},
     values::{BasicValueEnum, FloatValue, FunctionValue, InstructionValue, IntValue, PointerValue},
     FloatPredicate, OptimizationLevel, IntPredicate,
+	//types::AnyTypeEnum::as_int_type
+	//types::BasicTypeEnum::as_int_type
+	//values::AnyValueEnum::as_int_value
 };
 
 use std::error::Error;
@@ -1069,7 +1072,7 @@ fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<
             return;
         }
         _ => { // does not support loops and ifs yeet
-            panic!("Does not interpret FDef and Nil") 
+            panic!("Does not interpret FDef") 
         }
     }
 }
@@ -1135,14 +1138,35 @@ fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, env: &Vec<HashMap<S
 }
 
 
-// fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
-//             // "fn f1() -> i32 {if true {return 1}}"
-//     let (_, (s, e)) = parse_outer_statement(Span::new("fn f1() -> i32{let arg : i32 = 5;let a : i32 = f2(5,arg); a} fn f2(x: i32, y: i32) -> i32{return x*2 + y}")).unwrap();
-//     //println!("{:?} ", e)
-//     let hash_map = HashMap::new();
-//     let mut args: Vec<Val> = Vec::new();
-//     println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
-// }
+fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
+            // "fn f1() -> i32 {if true {return 1}}"
+    let (_, (s, e)) = parse_outer_statement(Span::new("fn f2(x: i32, y: i32) -> i32{return x*y} fn f1() -> i32{let a : i32 = f2(5,3); a}")).unwrap();
+    //println!("{:?} ", e)
+    //let hash_map = HashMap::new();
+    //let mut args: Vec<Val> = Vec::new();
+    //println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
+    let context = Context::create();
+    let module = context.create_module("expr");
+    let builder = context.create_builder();
+    let fpm = PassManager::create(&module);
+    fpm.initialize();
+    //let execution_engine = module.create_jit_execution_engine(OptimizationLevel::None);
+
+    let u32_type = context.i32_type();
+    let fn_type = u32_type.fn_type(&[], false);
+    let function = module.add_function("f1", fn_type, None);
+    let mut compiler = Compiler {
+        context: &context,
+        builder: &builder,
+        module: &module,
+        fn_value_opt: Some(function),
+        variables: HashMap::new(),
+        //&fpm,
+    };
+    compiler.compile_program(&(s,e));
+
+    module.print_to_stderr();
+}
 
 // compiler
 //
@@ -1293,6 +1317,17 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn compile_expr_or_fcall(&self, ss: &SpanStatement) -> IntValue {
+        match &ss.1 {
+            Statement::Expr(se) => self.compile_expr(se),
+            Statement::Return(ss) => self.compile_expr_or_fcall(ss),
+            Statement::FCall(name, s_arg) => {
+                self.compile_fcall(name, s_arg)
+            }
+            _ => panic!("expected expr or fcall or ret")
+        }
+    }
+
     /// Creates a new stack allocation instruction in the entry block of the function.
     fn create_entry_block_alloca(&mut self, name: &str) -> PointerValue {
         let builder = self.context.create_builder();
@@ -1310,35 +1345,120 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a command into (InstructionValue, b:bool)
     /// `b` indicates that its a return value of the basic block
-    fn compile_statement(&mut self, statement: &SpanStatement) -> (InstructionValue, bool) {
+    fn compile_statement(&mut self, statement: &SpanStatement) {
         match &statement.1 {
             Statement::Expr(se) => {
-                (self.compile_expr(se).as_instruction().unwrap(),false)
+                self.compile_expr(se).as_instruction().unwrap();
             }
             Statement::VarAssign(name, stmnt) => {
                 let var = self.get_variable(&name);
-                let rexp = self.compile_statement(&stmnt);
-                (self.builder.build_store(*var, rexp), false)
+                let rexp = self.compile_expr_or_fcall(&stmnt);
+                self.builder.build_store(*var, rexp);
             }
+            Statement::VarDec(name, _, ss) => {
+                let alloca = self.create_entry_block_alloca(&name);
+                let expr = self.compile_expr_or_fcall(&ss);
+                self.builder.build_store(alloca, expr);
+            }
+            Statement::Node(lss,rss) => {
+                self.compile_statement(&lss);
+                self.compile_statement(&rss);
+            }
+            Statement::Return(ss) => {
+                return self.compile_statement(&ss);
+            }
+            Statement::FCall(name, s_arg) => {
+                self.compile_fcall(name, s_arg);
+            }
+            Statement::Nil => return,
             
-            
-
-            // -- TODO: This is code from my `old` interpreter
-            //     Cmd::If(exp, then_block, opt_else) => {
-            //         if get_bool(eval_expr(exp, mem, venv, fenv)) {
-            //             eval_body(then_block.to_vec(), mem, venv, fenv)
-            //         } else {
-            //             if let Some(else_block) = opt_else {
-            //                 eval_body(else_block.to_vec(), mem, venv, fenv)
-            //             } else {
-            //                 None
-            //             }
-            //         }
-            //     }
-            // -- TODO: While
             
             _ => unimplemented!(),
         }
+    }
+
+    fn compile_program(&mut self, ss: &SpanStatement) {
+        match &ss.1 {
+            Statement::Node(lss, rss) => {
+                self.compile_program(lss);
+                self.compile_program(rss);
+            }
+            Statement::FDef(name, st, ss_par, ss_body) => {
+                self.compile_fn(name, st, ss_par, ss_body);
+            }
+            _ => panic!("expected function or node")
+        }
+    }
+
+    fn par_to_vec(&self, ss_par: &SpanStatement, vec: &mut Vec<(String, Type)>) {
+        match &ss_par.1 {
+            Statement::VarDec(name, s_type, _) => {
+                vec.push((name.to_owned(), s_type.1));
+            }
+            Statement::Node(lpar, rpar) => {
+                self.par_to_vec(lpar, vec);
+                self.par_to_vec(rpar, vec);
+            }
+            Statement::Nil => return,
+            _ => panic!("not a parameter")
+        }
+    }
+    fn arg_to_vec(&self, ss_arg: &SpanStatement, vec: &mut Vec<BasicValueEnum>) {
+        match &ss_arg.1 {
+            Statement::Expr(_) | Statement::FCall(_,_) => {
+                vec.push(self.compile_expr_or_fcall(&ss_arg).into());
+            }
+            Statement::Node(lss, rss) => {
+                self.arg_to_vec(lss, vec);
+                self.arg_to_vec(rss, vec);
+            }
+            _ => panic!("only expr fcall or nodes")
+        }
+    }
+    fn compile_fcall(&self, name: &str, s_arg: &SpanStatement) -> IntValue {
+        print!("{:?}", name);
+        match self.get_function(name) {
+            Some(fun) => {
+                let mut arg_vec: Vec<BasicValueEnum> = Vec::new();
+                self.arg_to_vec(s_arg, &mut arg_vec);
+
+                match self.builder.build_call(fun, arg_vec.as_slice(), "tmp").try_as_basic_value().left() {
+                    Some(val) => val.into_int_value(),
+                    None => {
+                        panic!("fuck!");
+                    }
+                }
+            }
+            None => panic!("not found")
+        }
+    }
+    fn compile_fn(&mut self, name: &str, _st: &SpanType, ss_par: &SpanStatement, ss_body: &SpanStatement) {
+        let mut par_vec: Vec<(String, Type)> = Vec::new();
+        self.par_to_vec(ss_par, &mut par_vec);
+        let ret_type = self.context.i32_type();
+        let par_types = std::iter::repeat(ret_type).take(par_vec.len()).map(|f| f.into()).collect::<Vec<BasicTypeEnum>>();
+        let par_types = par_types.as_slice();
+        let fn_type = self.context.i32_type().fn_type(par_types, false);
+        let fn_val = self.module.add_function(name, fn_type, None);
+
+        let entry = self.context.append_basic_block(&fn_val, "entry");
+        self.builder.position_at_end(&entry);
+
+        self.fn_value_opt = Some(fn_val);
+
+        // build variables map
+        self.variables.reserve(par_vec.len());
+
+        for (i, arg) in fn_val.get_param_iter().enumerate() {
+            let arg_name = par_vec[i].0.as_str();
+            let alloca = self.create_entry_block_alloca(arg_name);
+
+            self.builder.build_store(alloca, arg);
+
+            self.variables.insert(par_vec[i].0.clone(), alloca);
+        }
+
+        self.compile_statement(ss_body);
     }
 
     /*pub fn compile_block(&mut self, cmds: Vec<Cmd>) -> InstructionValue {
