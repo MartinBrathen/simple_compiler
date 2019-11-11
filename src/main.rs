@@ -1140,7 +1140,18 @@ fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, env: &Vec<HashMap<S
 
 fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
             // "fn f1() -> i32 {if true {return 1}}"
-    let (_, (s, e)) = parse_outer_statement(Span::new("fn f2(x: i32, y: i32) -> i32{return x*y} fn f1() -> i32{let a : i32 = f2(5,3); return a}")).unwrap();
+    let (_, (s, e)) = parse_outer_statement(Span::new(
+        "fn f2(x: i32, y: i32) -> i32 {
+            return x*y
+        } fn f1() -> i32 {
+            let a : i32 = f2(5,3);
+            let b : i32 = 0;
+            while b != 10 {
+                b = b + 1;
+            }
+            return a
+        }"
+    )).unwrap();
     //println!("{:?} ", e)
     //let hash_map = HashMap::new();
     //let mut args: Vec<Val> = Vec::new();
@@ -1404,15 +1415,14 @@ impl<'a> Compiler<'a> {
                 let parent = self.fn_value();
                 let zero_const = self.context.i32_type().const_int(0,false);
 
-                let cond = self.compile_expr_or_fcall(cond_ss);
-                let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "condition");
-
-                let loop_head_bb = self.context.append_basic_block(&parent, "loophead");
-                let loop_body_bb = self.context.append_basic_block(&parent, "loopbody");
-                let cont_bb = self.context.append_basic_block(&parent, "continue");
+                let loop_head_bb = self.context.append_basic_block(&parent, "lhead");
+                let loop_body_bb = self.context.append_basic_block(&parent, "lbody");
+                let cont_bb = self.context.append_basic_block(&parent, "cont");
 
                 self.builder.build_unconditional_branch(&loop_head_bb);
                 self.builder.position_at_end(&loop_head_bb);
+                let cond = self.compile_expr_or_fcall(cond_ss);
+                let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "cond");
                 self.builder.build_conditional_branch(cond, &loop_body_bb, &cont_bb);
 
                 self.builder.position_at_end(&loop_body_bb);
