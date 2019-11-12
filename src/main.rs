@@ -3,6 +3,7 @@
 extern crate nom;
 
 use inkwell::{
+    basic_block::BasicBlock,
     builder::Builder,
     context::Context,
     execution_engine::{ExecutionEngine, JitFunction},
@@ -677,6 +678,9 @@ fn parse_return(i: Span) -> IResult<Span, SpanStatement>{
 }
 
 
+// Printing -----------
+
+
 // dumps a Span into a String
 fn dump_span(s: &Span) -> String {
     format!(
@@ -765,30 +769,239 @@ fn dump_expr(se: &SpanExpr) -> String {
     }
 }
 
+// Type Checker ---------------------------------------------------------------
+
+fn do_typechecking(fn_hmap: &HashMap<String, &Statement>) {
+    for fnc in fn_hmap {
+        typecheck_fdef(fn_hmap, fnc.1);
+    }
+}
+
+fn typecheck_fdef(fn_hmap: &HashMap<String, &Statement>, fnc: &Statement) {
+
+    match fnc {
+        Statement::FDef(_,rt,_,bss) => {
+            let mut env: Vec<HashMap<String, Type>>  = Vec::new();
+            if typecheck_statement(fn_hmap, &mut env, bss, rt.1).0 != rt.1 {
+                panic!("wrong return type")
+            }
+        }
+        _ => panic!("not a function"),
+    }
+    
+}
+
+fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, Type>>, stmnt: &SpanStatement, ret_type: Type) -> (Type, bool) { // bool is in case of explicit return
+    match &stmnt.1 {
+        Statement::Condition(cond_ss, then_ss, else_ss) => {
+            if typecheck_statement(fn_hmap, env, &cond_ss, Type::Bool).0 != Type::Bool {
+                panic!("does not eval to bool")
+            }
+            env.push(HashMap::new());
+            let (rt,rb) = typecheck_statement(fn_hmap, env, &then_ss, ret_type);
+            if rb == true {
+                if rt != ret_type {
+                    panic!("return does not match return type")
+                } else {
+                    return (rt,rb);
+                }
+            }
+            env.pop();
+            env.push(HashMap::new());
+            let (rt,rb) = typecheck_statement(fn_hmap, env, &else_ss, ret_type);
+            if rb == true {
+                if rt != ret_type {
+                    panic!("return does not match return type")
+                } else {
+                    return (rt,rb);
+                }
+            }
+            env.pop();
+            return (ret_type, false)
+        }
+        Statement::WhileLoop(cond_ss, body_ss) => {
+            if typecheck_statement(fn_hmap, env, &cond_ss, Type::Bool).0 != Type::Bool {
+                panic!("does not eval to bool")
+            }
+            env.push(HashMap::new());
+            let (rt,rb) = typecheck_statement(fn_hmap, env, &body_ss, ret_type);
+            if rb == true {
+                if rt != ret_type {
+                    panic!("return does not match return type")
+                } else {
+                    return (rt,rb);
+                }
+            }
+            env.pop();
+            return (ret_type, false)
+        }
+        Statement::Expr(expr_ss) => {
+            return (typecheck_expression(env, expr_ss), false);
+        }
+        Statement::Nil => return (ret_type, false),
+        Statement::Node(lss, rss) => {
+            let (rt0,rb0) = typecheck_statement(fn_hmap, env, &lss, ret_type);
+            let (rt1,rb1) = typecheck_statement(fn_hmap, env, &rss, ret_type);
+            if (rb1 && (rt1 != ret_type)) || (rb0 && (rt0 != ret_type))  {
+                panic!("returns wrong type")
+            }
+            return (ret_type, rb0 || rb1);
+        }
+        Statement::Return(ss) => {
+            let (rt, _) = typecheck_statement(fn_hmap, env, &ss,ret_type);
+            if rt != ret_type {
+                panic!("returns wrong type")
+            }
+            return (ret_type, true);
+        }
+        Statement::FCall(name, arg_ss) => {
+            match fn_hmap.get(name) {
+                Some(fun) => {
+                    match fun {
+                        Statement::FDef(_,st,param_ss,_) => {
+                            typecheck_arg(fn_hmap, env, param_ss, arg_ss);
+                            return (st.1, false);
+                        }
+                        _ => panic!("not a function")
+                    }
+                }
+                None => panic!("fn does not exist")
+            }
+        }
+        Statement::VarDec(_,st, ss) => {
+            let (rt, _) = typecheck_statement(fn_hmap, env, &ss, st.1);
+            if rt != st.1 {
+                panic!("cant assign wrong type")
+            }
+            return (rt,false);
+        }
+        Statement::VarAssign(name, ss) => {
+            let i = env.len()-1;
+            let t = typecheck_var_ref(name,i, env);
+            if t != typecheck_statement(fn_hmap, env, &ss, t).0 {
+                panic!("cant assign wrong type")
+            }
+            return (t, false);
+        }
+        _ => panic!("unexpected statement")
+    }
+}
+
+fn typecheck_arg(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, Type>>, param_ss: &SpanStatement,  args_ss: &SpanStatement) {
+    match (&param_ss.1, &args_ss.1) {
+        (Statement::Nil, Statement::Nil) => {
+            return;
+        }
+        (Statement::Node(lp,rp), Statement::Node(la, ra)) => {
+            typecheck_arg(fn_hmap, env, &lp, &la);
+            typecheck_arg(fn_hmap, env, &rp, &ra);
+        }
+        (Statement::VarDec(_,st,_), Statement::Expr(se)) => {
+            if st.1 != typecheck_expression(env, &se) {
+                panic!("wrong type!");
+            }
+        }
+        (Statement::VarDec(_,st,_), _) => {
+            if st.1 != typecheck_statement(fn_hmap, env, &args_ss, st.1).0 {
+                panic!("wrong type!");
+            }
+        }
+        _ => panic!("bad argument")
+    }
+}
+
+fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Type {
+    match &expr.1 {
+        Expr::Num(_) => {
+            return Type::Int;
+        }
+        Expr::Val(_) => {
+            return Type::Bool;
+        }
+        Expr::BinOp(l, _, r) => {
+            match (typecheck_expression(env, l), typecheck_expression(env, r)) {
+                (Type::Int, Type::Int) => {
+                    return Type::Int;
+                }
+                _ => {
+                    panic!("bad type")
+                }
+            };
+        }
+        Expr::UOp(_, r) => {
+            match typecheck_expression(env, r) {
+                Type::Int => {
+                    return Type::Int;
+                }
+                _ => {
+                    panic!("bad type")
+                }
+            }
+        }
+        Expr::BinBOp(l, _, r) => {
+            match (typecheck_expression(env, l), typecheck_expression(env, r)) {
+                (Type::Bool, Type::Bool) => {
+                    return Type::Bool;
+                }
+                _ => {
+                    panic!("bad type")
+                }
+            };
+        }
+        Expr::UBOp(_, r) => {
+            match typecheck_expression(env, r) {
+                Type::Bool => {
+                    return Type::Bool;
+                }
+                _ => {
+                    panic!("bad type")
+                }
+            }
+        }
+        Expr::Comp(l, _, r) => {
+            match (typecheck_expression(env, l), typecheck_expression(env, r)) {
+                (Type::Bool, Type::Bool) => {
+                    return Type::Bool;
+                }
+                (Type::Int, Type::Int) => {
+                    return Type::Bool;
+                }
+                _ => {
+                    panic!("bad type")
+                }
+            };
+        }
+        Expr::VarRef(st) => {
+            let i = env.len()-1;
+            typecheck_var_ref(st,i, env)
+            
+        }
+        
+    }
+}
+fn typecheck_var_ref(name: &str, i:usize, env: &Vec<HashMap<String, Type>>) -> Type {
+    match env[i].get(name) {
+        Some(t) => {
+            *t
+        }
+        None => {
+            if i > 0 {
+                typecheck_var_ref(name, i-1, env)
+            }else{
+                panic!("var not found")
+            }
+        }
+    }
+}
+
+// Interpreter ----------------------------------------------------------------
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Val {
     Int(i32),
     Bool(bool),
     Nil,
 }
-
-
-fn build_fn_hash_test<'a>(stmnt: Statement<'a>, hm: &mut HashMap<String, (Type, Statement<'a>, Statement<'a>)>){
-    match stmnt {
-        Statement::FDef(name, s_type, s_par, s_st) => {
-            hm.insert(name, (s_type.1, s_par.1, s_st.1));
-        }
-        Statement::Node(l,r) => {
-            build_fn_hash_test(l.1, hm);
-            build_fn_hash_test(r.1, hm);
-        }
-        _ => {
-            panic!("not function or node")
-        }
-    }
-
-}
-
 
 fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
     let (_,e) = i;
@@ -900,7 +1113,6 @@ fn var_ref(name: &str, i:usize, env: &Vec<HashMap<String, (Val, Type)>>) -> Val 
             }else{
                 panic!("var not found")
             }
-
         }
     }
 }
@@ -922,8 +1134,9 @@ fn build_fn_hash<'a>(i: &'a SpanStatement, mut hm: HashMap<String, &'a Statement
             panic!("not function or node")
         }
     }
+}
 
-}fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>, args: &mut Vec<Val>) -> Val {
+fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>, args: &mut Vec<Val>) -> Val {
     let mut env: Vec<HashMap<String, (Val, Type)>>  = Vec::new();
     env.push(HashMap::new());
     let i = env.len()-1;
@@ -1077,7 +1290,6 @@ fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<
     }
 }
 
-
 fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, s_loop: &SpanStatement, s_cond: &SpanStatement) {
     let c_val = eval_fcall_or_expr(fn_hmap, env, s_cond);
     let cond: bool;
@@ -1113,7 +1325,6 @@ fn eval_arg(fn_hmap: &HashMap<String, &Statement>, s_arg: &SpanStatement, env: &
             panic!("invalid arguments");
         }
     }
-
 }
 
 
@@ -1137,104 +1348,9 @@ fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, env: &Vec<HashMap<S
     }
 }
 
-
-fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
-            // "fn f1() -> i32 {if true {return 1}}"
-    let (_, (s, e)) = parse_outer_statement(Span::new(
-        "fn f2(x: i32, y: i32) -> i32 {
-            return x*y
-        } fn f1() -> i32 {
-            let a : i32 = f2(5,3);
-            let b : i32 = 0;
-            while b != 10 {
-                b = b + 1;
-            }
-            return a
-        }"
-    )).unwrap();
-    //println!("{:?} ", e)
-    //let hash_map = HashMap::new();
-    //let mut args: Vec<Val> = Vec::new();
-    //println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
-    let context = Context::create();
-    let module = context.create_module("expr");
-    let builder = context.create_builder();
-    let fpm = PassManager::create(&module);
-    fpm.initialize();
-    //let execution_engine = module.create_jit_execution_engine(OptimizationLevel::None);
-
-    let u32_type = context.i32_type();
-    let fn_type = u32_type.fn_type(&[], false);
-    let function = module.add_function("f1", fn_type, None);
-    let mut compiler = Compiler {
-        context: &context,
-        builder: &builder,
-        module: &module,
-        fn_value_opt: Some(function),
-        variables: HashMap::new(),
-        //&fpm,
-    };
-    compiler.compile_program(&(s,e));
-
-    module.print_to_stderr();
-}
-
-// compiler
-//
-//
-//
-
-
+// compiler --------------------------------------------------------------------------
 
 type ExprFunc = unsafe extern "C" fn() -> i32;
-
-/*fn main() -> Result<(), Box<dyn Error>> {
-    let context = Context::create();
-    let module = context.create_module("expr");
-    let builder = context.create_builder();
-    let fpm = PassManager::create(&module);
-    fpm.initialize();
-    let execution_engine = module.create_jit_execution_engine(OptimizationLevel::None)?;
-
-    match parse_brackets(Span::new(
-        "
-        {
-            let abba : mut i32 = 7;
-            abba = 5;
-            return  2 + abba
-        }
-        ",
-    )) {
-        Ok((_, prog)) => {
-            println!("ast : {:?}", &prog);
-            let u32_type = context.i32_type();
-            let fn_type = u32_type.fn_type(&[], false);
-            let function = module.add_function("expr", fn_type, None);
-            let basic_block = context.append_basic_block(&function, "entry");
-            builder.position_at_end(&basic_block);
-
-            let mut compiler = Compiler {
-                context: &context,
-                builder: &builder,
-                module: &module,
-                fn_value_opt: Some(function),
-                variables: HashMap::new(),
-                //&fpm,
-            };
-            compiler.compile_block(prog);
-            let fun_expr: JitFunction<ExprFunc> =
-                unsafe { execution_engine.get_function("expr").ok().unwrap() };
-
-            unsafe {
-                println!("\nexecution result : {}", fun_expr.call());
-            }
-        }
-        _ => panic!(),
-    }
-    module.print_to_stderr();
-
-    Ok(())
-}*/
 
 /// Compiler holds the LLVM state for the compilation
 pub struct Compiler<'a> {
@@ -1340,16 +1456,16 @@ impl<'a> Compiler<'a> {
     }
 
     /// Creates a new stack allocation instruction in the entry block of the function.
-    fn create_entry_block_alloca(&mut self, name: &str) -> PointerValue {
-        let builder = self.context.create_builder();
+    fn create_entry_block_alloca(&mut self, name: &str, b: &Builder) -> PointerValue {
+        //let builder = self.context.create_builder();
 
-        let entry = self.fn_value().get_first_basic_block().unwrap();
+        //let entry = self.fn_value().get_first_basic_block().unwrap();
 
-        match entry.get_first_instruction() {
-            Some(first_instr) => builder.position_before(&first_instr),
-            None => builder.position_at_end(&entry),
-        }
-        let alloca = builder.build_alloca(self.context.i32_type(), name);
+        //match entry.get_first_instruction() {
+        //    Some(first_instr) => builder.position_before(&first_instr),
+        //    None => builder.position_at_end(&entry),
+        //}
+        let alloca = b.build_alloca(self.context.i32_type(), name);
         self.variables.insert(name.to_string(), alloca);
         alloca
     }
@@ -1367,7 +1483,7 @@ impl<'a> Compiler<'a> {
                 self.builder.build_store(*var, rexp);
             }
             Statement::VarDec(name, _, ss) => {
-                let alloca = self.create_entry_block_alloca(&name);
+                let alloca = self.create_entry_block_alloca(&name, &self.builder);
                 let expr = self.compile_expr_or_fcall(&ss);
                 self.builder.build_store(alloca, expr);
             }
@@ -1484,7 +1600,7 @@ impl<'a> Compiler<'a> {
                 match self.builder.build_call(fun, arg_vec.as_slice(), "tmp").try_as_basic_value().left() {
                     Some(val) => val.into_int_value(),
                     None => {
-                        panic!("fuck!");
+                        panic!("got no value");
                     }
                 }
             }
@@ -1510,7 +1626,7 @@ impl<'a> Compiler<'a> {
 
         for (i, arg) in fn_val.get_param_iter().enumerate() {
             let arg_name = par_vec[i].0.as_str();
-            let alloca = self.create_entry_block_alloca(arg_name);
+            let alloca = self.create_entry_block_alloca(arg_name, &self.builder);
 
             self.builder.build_store(alloca, arg);
 
@@ -1520,16 +1636,44 @@ impl<'a> Compiler<'a> {
         self.compile_statement(ss_body);
     }
 
-    /*pub fn compile_block(&mut self, cmds: Vec<Cmd>) -> InstructionValue {
-        for c in &cmds {
-            let (cmd, ret) = self.compile_cmd(c);
-            // early return (e.g., inside a loop/conditional)
-            if ret {
-                return cmd;
-            }
-        }
-        panic!();
-    }*/
+}
 
-    // TODO, function declarations
+fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
+            // "fn f1() -> i32 {if true {return 1}}"
+    let (_, (s, e)) = parse_outer_statement(Span::new(
+        "fn f2(x: i32, y: i32) -> i32 {
+            return x*y
+        } fn f1() -> i32 {
+            let a : i32 = f2(5,3);
+            let b : i32 = 0;
+            while b != 10 {
+                b = b + 1;
+            }
+            return a
+        }"
+    )).unwrap();
+    //println!("{:?} ", e)
+    //let hash_map = HashMap::new();
+    //let mut args: Vec<Val> = Vec::new();
+    //println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
+    let context = Context::create();
+    let module = context.create_module("expr");
+    let builder = context.create_builder();
+    let fpm = PassManager::create(&module);
+    fpm.initialize();
+
+    let u32_type = context.i32_type();
+    let fn_type = u32_type.fn_type(&[], false);
+    let function = module.add_function("f1", fn_type, None);
+    let mut compiler = Compiler {
+        context: &context,
+        builder: &builder,
+        module: &module,
+        fn_value_opt: Some(function),
+        variables: HashMap::new(),
+        //&fpm,
+    };
+
+    compiler.compile_program(&(s,e));
+    module.print_to_stderr();
 }
