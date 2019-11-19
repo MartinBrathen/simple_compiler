@@ -21,7 +21,7 @@ use std::error::Error;
 
 use nom::{
     branch::alt,
-    bytes::complete::{tag,},
+    bytes::complete::{tag,is_not},
     character::complete::{digit1, multispace0, multispace1,  alpha1, alphanumeric0},
     combinator::{map},
     sequence::{preceded, tuple, terminated},
@@ -62,6 +62,7 @@ pub enum Expr<'a> {
     UBOp(SpanUBOp<'a>, Box<SpanExpr<'a>>),
     Comp(Box<SpanExpr<'a>>, SpanComp<'a>, Box<SpanExpr<'a>>),
     VarRef(String),
+    FCall(String, Box<SpanStatement<'a>>),
 }
 
 type SpanExpr<'a> = (Span<'a>, Expr<'a>);
@@ -184,11 +185,15 @@ fn parse_i32(i: Span) -> IResult<Span, SpanExpr> {
     )(i)
 }
 
-fn parse_var_ref(i: Span) -> IResult<Span, SpanExpr> {
+fn parse_var_fcall(i: Span) -> IResult<Span, SpanExpr> {
+    alt ((
+        
+        parse_f_call,
         map(
-            tuple((alpha1,alphanumeric0)),
-            |(alpha_str,an_str):(Span,Span)| (i,Expr::VarRef(format!("{}{}",alpha_str.fragment,an_str.fragment)))
-        )(i)
+            parse_var,
+            |var| (i,Expr::VarRef(var))
+        ),
+    ))(i)
 }
 
 
@@ -262,7 +267,7 @@ fn parse_i32_or_var(i: Span) -> IResult<Span, SpanExpr>{
     preceded(multispace0,
         alt((
             parse_i32,
-            parse_var_ref,
+            parse_var_fcall,
         ))
     )(i)
 }
@@ -279,7 +284,7 @@ fn parse_expr_bool(i: Span) -> IResult<Span, SpanExpr> {
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
             map(
-                tuple((alt((parse_expr_bu, parse_var_ref)), parse_bop, parse_expr_bool)),
+                tuple((alt((parse_expr_bu, parse_var_fcall)), parse_bop, parse_expr_bool)),
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
 
@@ -295,11 +300,11 @@ fn parse_expr_bu(i: Span) -> IResult<Span, SpanExpr>{
     preceded(multispace0,
         alt((
             map( // Parses i32 (*, /, %) unit
-                tuple((parse_bool, parse_and, alt((parse_expr_bu, parse_var_ref)))),
+                tuple((parse_bool, parse_and, alt((parse_expr_bu, parse_var_fcall)))),
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
             map( // (expr) (*, /, %) unit
-                tuple((preceded(tag("("), parse_expr_bool), preceded(tag(")"), parse_and), alt((parse_expr_bu, parse_var_ref)))),
+                tuple((preceded(tag("("), parse_expr_bool), preceded(tag(")"), parse_and), alt((parse_expr_bu, parse_var_fcall)))),
                 |(l, op, r)| (i, Expr::BinBOp(Box::new(l), op, Box::new(r))),
             ),
             map( // Parses (expr) (bin op) expr
@@ -312,7 +317,7 @@ fn parse_expr_bu(i: Span) -> IResult<Span, SpanExpr>{
             ),
             parse_expr_parentheses,
             map( // Parses !unit
-                tuple((parse_not, alt((parse_expr_bu, parse_var_ref)))),
+                tuple((parse_not, alt((parse_expr_bu, parse_var_fcall)))),
                 |(op, r)| (i, Expr::UBOp( op, Box::new(r))),
             ),
             parse_expr_comp,
@@ -379,10 +384,6 @@ fn parse_expr_parentheses(i: Span) -> IResult<Span, SpanExpr>{
     preceded(multispace0, terminated(preceded(tag("("), parse_expr),preceded(multispace0,tag(")"))))(i)
 }
 
-fn parse_statement_parentheses(i: Span) -> IResult<Span, SpanStatement>{
-    preceded(multispace0, terminated(preceded(tag("("), parse_statement_returning),preceded(multispace0,tag(")"))))(i)
-}
-
 #[derive(Copy, Clone ,Debug, PartialEq)]
 pub enum Type{
     Int,
@@ -398,15 +399,14 @@ type SpanType<'a> = (Span<'a>, Type);
 pub enum Statement<'a> {
     Nil,
     VarDec(String, SpanType<'a>, Box::<SpanStatement<'a>>),
-    VarAssign(String, Box::<SpanStatement<'a>>),
+    VarAssign(String, Box::<SpanExpr<'a>>),
     //         Condition            If                          Else
-    Condition(Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
-    WhileLoop(Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
+    Condition(Box::<SpanExpr<'a>>, Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
+    WhileLoop(Box::<SpanExpr<'a>>, Box::<SpanStatement<'a>>),
     FDef(String, SpanType<'a>, Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
-    FCall(String, Box::<SpanStatement<'a>>),
     Expr(Box::<SpanExpr<'a>>),
     Node(Box::<SpanStatement<'a>>, Box::<SpanStatement<'a>>),
-    Return(Box::<SpanStatement<'a>>),
+    Return(Box::<SpanExpr<'a>>),
 }
 
 type SpanStatement<'a> = (Span<'a>, Statement<'a>);
@@ -427,8 +427,8 @@ fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
         alt((
             // -------- Var Declare
             map(
-                    tuple((terminated(parse_var_dec,preceded(multispace0,tag(";"))), parse_statement)),
-                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
+                tuple((terminated(parse_var_dec,preceded(multispace0,tag(";"))), parse_statement)),
+                |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
             terminated(parse_var_dec,preceded(multispace0,tag(";"))),
             // -------- Var Assign
@@ -449,11 +449,8 @@ fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
                     |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
             parse_while_loop,
-            // -------- fn call
-            map(
-                    tuple((terminated(parse_f_call,preceded(multispace0,tag(";"))), parse_statement)),
-                    |(l, r)| (i, Statement::Node(Box::new(l), Box::new(r)))
-            ),
+            // -------- return
+            parse_return,
             // -------- expr
             map(
                     tuple((terminated(parse_expr,preceded(multispace0,tag(";"))), parse_statement)),
@@ -461,34 +458,28 @@ fn parse_statement(i: Span) -> IResult<Span, SpanStatement> {
             ),
             map(
                     terminated(parse_expr,preceded(multispace0, tag(";"))),
-                    |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
+                    |l| (i, Statement::Expr(Box::new(l)))
             ),
-            // -------- Statements that return a value
-            parse_statement_returning,
         ))
     )(i)
 }
 
-fn parse_statement_returning(i: Span) -> IResult<Span, SpanStatement> {
+fn parse_return(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
-        alt((
-            // -------- return
-            map(
-                    terminated(parse_return,preceded(multispace0,tag(";"))),
-                    |l| (i, Statement::Return(Box::new(l)))
-            ),
-            parse_return,
-            // -------- fn call
-            map(
-                    parse_f_call,
-                    |r| (i, Statement::Return(Box::new(r)))
-            ),
-            // -------- expr
-            map(
-                    parse_expr,
-                    |l| (i, Statement::Return(Box::new((Span::new(""),Statement::Expr(Box::new(l))))))
-            ),
-        ))
+        preceded(tag("return"),
+            preceded(multispace1,
+                alt((
+                    map(
+                        terminated(parse_expr,preceded(multispace0,tag(";"))),
+                        |l| (i, Statement::Return(Box::new(l)))
+                    ),
+                    map(
+                        parse_expr,
+                        |l| (i, Statement::Return(Box::new(l)))
+                    ),
+                ))
+            )
+        )
     )(i)
 }
 
@@ -516,7 +507,7 @@ fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
             alt((
 
                 map(
-                        tuple((terminated(parse_var,preceded(multispace0,tag(":"))), parse_type, preceded(preceded(multispace0,tag("=")), parse_statement_returning))),
+                        tuple((terminated(parse_var,preceded(multispace0,tag(":"))), parse_type, preceded(preceded(multispace0,tag("=")), parse_var_dec_expr))),
                         |(v_name, v_type, val)| (i, Statement::VarDec(v_name, v_type, Box::new(val))),
                 ),
                 map(
@@ -530,10 +521,17 @@ fn parse_var_dec(i: Span) -> IResult<Span, SpanStatement> {
     )(i)
 }
 
+fn parse_var_dec_expr(i: Span) -> IResult<Span, SpanStatement> {
+        map(
+            parse_expr,
+            |l| (i, Statement::Expr(Box::new(l)))
+        )(i)
+}
+
 fn parse_var_assign(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
         map(
-                    tuple((parse_var, preceded(preceded(multispace0,tag("=")), parse_statement_returning))),
+                    tuple((parse_var, preceded(preceded(multispace0,tag("=")), parse_expr))),
                     |(v_name, val)| (i, Statement::VarAssign(v_name, Box::new(val))),
             )
     )(i)
@@ -548,11 +546,11 @@ fn parse_condition(i: Span) -> IResult<Span, SpanStatement>{
         preceded(tag("if"),
             alt((
                 map(
-                        tuple((alt((preceded(multispace1,parse_statement),parse_statement_parentheses)), parse_brackets, parse_else)),
+                        tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets, parse_else)),
                         |(cond, statement, else_statement)| (i, Statement::Condition(Box::new(cond), Box::new(statement), Box::new(else_statement))),
                 ),
                 map(
-                        tuple((alt((preceded(multispace1,parse_statement),parse_statement_parentheses)), parse_brackets)),
+                        tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets)),
                         |(cond, statement)| (i, Statement::Condition(Box::new(cond), Box::new(statement), Box::new((Span::new(""),Statement::Nil)))),
                 )
             ))
@@ -572,7 +570,7 @@ fn parse_while_loop(i: Span) -> IResult<Span, SpanStatement>{
     preceded(multispace0,
         preceded(tag("while"),
             map(
-                    tuple((alt((preceded(multispace1,parse_statement),parse_statement_parentheses)), parse_brackets)),
+                    tuple((alt((preceded(multispace1,parse_expr),parse_expr_parentheses)), parse_brackets)),
                     |(cond, statement)| (i, Statement::WhileLoop(Box::new(cond), Box::new(statement))),
             )
         )
@@ -622,11 +620,11 @@ fn parse_parameter(i: Span) -> IResult<Span, SpanStatement> {
     )(i)
 }
 
-fn parse_f_call(i: Span) -> IResult<Span, SpanStatement>{
+fn parse_f_call(i: Span) -> IResult<Span, SpanExpr>{
     preceded(multispace0,
         map(
-                tuple((parse_var, parse_arguments)),
-                |(name, arg)| (i, Statement::FCall(name,Box::new(arg))),
+                tuple((parse_var, tag("("), parse_arguments)),
+                |(name, _, arg)| (i, Expr::FCall(name,Box::new(arg))),
         )
     )(i)
 }
@@ -639,14 +637,14 @@ fn parse_arguments(i: Span) -> IResult<Span, SpanStatement>{
                 tuple((terminated(parse_argument,preceded(multispace0,tag(","))), parse_arguments)), //4
                 |(l,r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
-            map(
+            /*map(
                 tuple((terminated(preceded(tag("("), parse_argument),preceded(multispace0,tag(","))), parse_arguments)), //3
                 |(l,r)| (i, Statement::Node(Box::new(l), Box::new(r)))
             ),
-            terminated(preceded(tag("("), parse_argument),preceded(multispace0,tag(")"))), //2
+            terminated(preceded(tag("("), parse_argument),preceded(multispace0,tag(")"))), //2*/
             map(//1
-                tuple((tag("("), preceded(multispace0,tag(")")))),
-                |(_,_)| (i, Statement::Nil)
+                tag(")"),
+                |_| (i, Statement::Nil)
             )
         ))
     )(i)
@@ -654,29 +652,12 @@ fn parse_arguments(i: Span) -> IResult<Span, SpanStatement>{
 
 fn parse_argument(i: Span) -> IResult<Span, SpanStatement> {
     preceded(multispace0,
-        alt((
-            parse_f_call,
-            map(
-                parse_expr,
-                |l| (i, Statement::Expr(Box::new(l)))
-            ),
-        ))
-    )(i)
-}
-
-fn parse_return(i: Span) -> IResult<Span, SpanStatement>{
-    preceded(multispace0,
-        preceded(tag("return"),
-            preceded(multispace1,
-                alt((
-                    terminated(parse_statement_returning,preceded(multispace0, tag(";"))),
-                    parse_statement_returning,
-                ))
-            )
+        map(
+            parse_expr,
+            |l| (i, Statement::Expr(Box::new(l)))
         )
     )(i)
 }
-
 
 // Printing -----------
 
@@ -706,19 +687,16 @@ fn dump_statement(se: &SpanStatement) -> String {
             format!("<{:?}: {} {} {}>", "VarDec:", st, dump_type(t), dump_statement(v))
         }
         Statement::VarAssign(st, v) => {
-            format!("<{:?}: {} {}>", "VarrAssign:", st, dump_statement(v))
+            format!("<{:?}: {} {}>", "VarrAssign:", st, dump_expr(v))
         }
         Statement::Condition(c, i, n) => {
-            format!("<{:?}: {} {} {}>", "Condition:", dump_statement(c), dump_statement(i), dump_statement(n))
+            format!("<{:?}: {} {} {}>", "Condition:", dump_expr(c), dump_statement(i), dump_statement(n))
         }
         Statement::WhileLoop(c, state) => {
-            format!("<{:?}: {} {}>", "WhileLoop:", dump_statement(c), dump_statement(state))
+            format!("<{:?}: {} {}>", "WhileLoop:", dump_expr(c), dump_statement(state))
         }
         Statement::FDef(st, t, par, stat) => {
             format!("<{:?}: {} {} {} {}>", "FDef:", st, dump_type(t), dump_statement(par), dump_statement(stat))
-        }
-        Statement::FCall(st, arg) => {
-            format!("<{:?}: {} {}>", "FCall:", st, dump_statement(arg))
         }
         Statement::Expr(expr) => {
             format!("<{:?}: {}>", "Expr:", dump_expr(expr))
@@ -727,7 +705,7 @@ fn dump_statement(se: &SpanStatement) -> String {
             format!("<{:?}: {} {}>", "Node:", dump_statement(l), dump_statement(r))
         }
         Statement::Return(r) => {
-            format!("<{:?}: {}>", "Return:", dump_statement(r))
+            format!("<{:?}: {}>", "Return:", dump_expr(r))
         }
         Statement::Nil => {
             format!("<{:?}>", "Nil")
@@ -765,7 +743,9 @@ fn dump_expr(se: &SpanExpr) -> String {
             format!("<{} {} {}>", dump_expr(l), dump_span(sop), dump_expr(r))
         }
         Expr::VarRef(_) => dump_span(s),
-
+        Expr::FCall(_, ss) => {
+            format!("<{} {}>", dump_span(s), dump_statement(ss))
+        }
     }
 }
 
@@ -793,8 +773,8 @@ fn typecheck_fdef(fn_hmap: &HashMap<String, &Statement>, fnc: &Statement) {
 
 fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, Type>>, stmnt: &SpanStatement, ret_type: Type) -> (Type, bool) { // bool is in case of explicit return
     match &stmnt.1 {
-        Statement::Condition(cond_ss, then_ss, else_ss) => {
-            if typecheck_statement(fn_hmap, env, &cond_ss, Type::Bool).0 != Type::Bool {
+        Statement::Condition(cond, then_ss, else_ss) => {
+            if typecheck_expression(fn_hmap, env, &cond) != Type::Bool {
                 panic!("does not eval to bool")
             }
             env.push(HashMap::new());
@@ -819,8 +799,8 @@ fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<Hash
             env.pop();
             return (ret_type, false)
         }
-        Statement::WhileLoop(cond_ss, body_ss) => {
-            if typecheck_statement(fn_hmap, env, &cond_ss, Type::Bool).0 != Type::Bool {
+        Statement::WhileLoop(cond, body_ss) => {
+            if typecheck_expression(fn_hmap, env, &cond) != Type::Bool {
                 panic!("does not eval to bool")
             }
             env.push(HashMap::new());
@@ -836,7 +816,7 @@ fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<Hash
             return (ret_type, false)
         }
         Statement::Expr(expr_ss) => {
-            return (typecheck_expression(env, expr_ss), false);
+            return (typecheck_expression(fn_hmap, env, expr_ss), false);
         }
         Statement::Nil => return (ret_type, false),
         Statement::Node(lss, rss) => {
@@ -847,26 +827,12 @@ fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<Hash
             }
             return (ret_type, rb0 || rb1);
         }
-        Statement::Return(ss) => {
-            let (rt, _) = typecheck_statement(fn_hmap, env, &ss,ret_type);
+        Statement::Return(se) => {
+            let rt = typecheck_expression(fn_hmap, env, se);
             if rt != ret_type {
                 panic!("returns wrong type")
             }
             return (ret_type, true);
-        }
-        Statement::FCall(name, arg_ss) => {
-            match fn_hmap.get(name) {
-                Some(fun) => {
-                    match fun {
-                        Statement::FDef(_,st,param_ss,_) => {
-                            typecheck_arg(fn_hmap, env, param_ss, arg_ss);
-                            return (st.1, false);
-                        }
-                        _ => panic!("not a function")
-                    }
-                }
-                None => panic!("fn does not exist")
-            }
         }
         Statement::VarDec(_,st, ss) => {
             let (rt, _) = typecheck_statement(fn_hmap, env, &ss, st.1);
@@ -875,10 +841,10 @@ fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<Hash
             }
             return (rt,false);
         }
-        Statement::VarAssign(name, ss) => {
+        Statement::VarAssign(name, e) => {
             let i = env.len()-1;
             let t = typecheck_var_ref(name,i, env);
-            if t != typecheck_statement(fn_hmap, env, &ss, t).0 {
+            if t != typecheck_expression(fn_hmap, env, &e) {
                 panic!("cant assign wrong type")
             }
             return (t, false);
@@ -897,7 +863,7 @@ fn typecheck_arg(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<St
             typecheck_arg(fn_hmap, env, &rp, &ra);
         }
         (Statement::VarDec(_,st,_), Statement::Expr(se)) => {
-            if st.1 != typecheck_expression(env, &se) {
+            if st.1 != typecheck_expression(fn_hmap, env, &se) {
                 panic!("wrong type!");
             }
         }
@@ -910,7 +876,7 @@ fn typecheck_arg(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<St
     }
 }
 
-fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Type {
+fn typecheck_expression(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Type {
     match &expr.1 {
         Expr::Num(_) => {
             return Type::Int;
@@ -919,7 +885,7 @@ fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Ty
             return Type::Bool;
         }
         Expr::BinOp(l, _, r) => {
-            match (typecheck_expression(env, l), typecheck_expression(env, r)) {
+            match (typecheck_expression(fn_hmap, env, l), typecheck_expression(fn_hmap, env, r)) {
                 (Type::Int, Type::Int) => {
                     return Type::Int;
                 }
@@ -929,7 +895,7 @@ fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Ty
             };
         }
         Expr::UOp(_, r) => {
-            match typecheck_expression(env, r) {
+            match typecheck_expression(fn_hmap, env, r) {
                 Type::Int => {
                     return Type::Int;
                 }
@@ -939,7 +905,7 @@ fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Ty
             }
         }
         Expr::BinBOp(l, _, r) => {
-            match (typecheck_expression(env, l), typecheck_expression(env, r)) {
+            match (typecheck_expression(fn_hmap, env, l), typecheck_expression(fn_hmap, env, r)) {
                 (Type::Bool, Type::Bool) => {
                     return Type::Bool;
                 }
@@ -949,7 +915,7 @@ fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Ty
             };
         }
         Expr::UBOp(_, r) => {
-            match typecheck_expression(env, r) {
+            match typecheck_expression(fn_hmap, env, r) {
                 Type::Bool => {
                     return Type::Bool;
                 }
@@ -959,7 +925,7 @@ fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Ty
             }
         }
         Expr::Comp(l, _, r) => {
-            match (typecheck_expression(env, l), typecheck_expression(env, r)) {
+            match (typecheck_expression(fn_hmap, env, l), typecheck_expression(fn_hmap, env, r)) {
                 (Type::Bool, Type::Bool) => {
                     return Type::Bool;
                 }
@@ -975,6 +941,20 @@ fn typecheck_expression(env: &Vec<HashMap<String, Type>>, expr: &SpanExpr) -> Ty
             let i = env.len()-1;
             typecheck_var_ref(st,i, env)
             
+        }
+        Expr::FCall(name, arg_ss) => {
+            match fn_hmap.get(name) {
+                Some(fun) => {
+                    match fun {
+                        Statement::FDef(_,st,param_ss,_) => {
+                            typecheck_arg(fn_hmap, env, param_ss, arg_ss);
+                            return st.1
+                        }
+                        _ => panic!("not a function")
+                    }
+                }
+                None => panic!("fn does not exist")
+            }
         }
         
     }
@@ -1003,7 +983,7 @@ pub enum Val {
     Nil,
 }
 
-fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
+fn eval_expr(fn_hmap: &HashMap<String, &Statement>, i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
     let (_,e) = i;
     match e {
         Expr::Num(v) => {
@@ -1013,7 +993,7 @@ fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
             Val::Bool(*v)
         }
         Expr::BinOp(l, (_, op), r) => {
-            let (le, re) = match (eval_expr(l, env),eval_expr(r, env)) {
+            let (le, re) = match (eval_expr(fn_hmap, l, env),eval_expr(fn_hmap, r, env)) {
                 (Val::Int(val), Val::Int(val2)) => {
                     (val, val2)
                 }
@@ -1029,7 +1009,7 @@ fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
             }
         }
         Expr::UOp((_, uop), r) => {
-            let re = match eval_expr(r, env) {
+            let re = match eval_expr(fn_hmap, r, env) {
                 Val::Int(val) => {
                     val
                 }
@@ -1044,7 +1024,7 @@ fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
             }
         }
         Expr::BinBOp(l, (_, bop), r) => {
-            let (le, re) = match (eval_expr(l, env),eval_expr(r, env)) {
+            let (le, re) = match (eval_expr(fn_hmap, l, env),eval_expr(fn_hmap, r, env)) {
                 (Val::Bool(val), Val::Bool(val2)) => {
                     (val, val2)
                 }
@@ -1062,7 +1042,7 @@ fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
             }
         }
         Expr::UBOp((_, ubop), r) => {
-            let re = match eval_expr(r, env) {
+            let re = match eval_expr(fn_hmap, r, env) {
                 Val::Bool(val) => {
                     val
                 }
@@ -1077,7 +1057,7 @@ fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
             }
         }
         Expr::Comp(l, (_, comp), r) => {
-            let (le, re) = (eval_expr(l, env),eval_expr(r, env));
+            let (le, re) = (eval_expr(fn_hmap, l, env),eval_expr(fn_hmap, r, env));
             match (le, re) {
                 (Val::Bool(_), Val::Bool(_)) => {}
                 (Val::Int(_), Val::Int(_)) => {}
@@ -1099,6 +1079,12 @@ fn eval_expr(i: &SpanExpr, env: &Vec<HashMap<String, (Val, Type)>>) -> Val {
             var_ref(st,i, env)
             
         }
+        Expr::FCall(name, s_arg) => {
+            let mut vec: Vec<Val> = Vec::new();
+            eval_arg(fn_hmap, s_arg, env, &mut vec);
+            return interpret_fn(name, fn_hmap, &mut vec);
+        }
+
     }
 }
 
@@ -1159,7 +1145,6 @@ fn interpret_fn(fn_name: &str, fn_hmap: &HashMap<String, &Statement>, args: &mut
 
     dec_param(fn_hmap, &mut env, fn_par, args);
     interpret_statement(fn_hmap, &mut env, fn_body);
-    println!("do i get here?");
     let (ret,_) = env[env.len()-1].get("return").unwrap();
     return *ret
 }
@@ -1227,35 +1212,33 @@ fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<
     let (_, bdy) = body; // remove span
     match bdy {
         Statement::Expr(e) => {
-            eval_expr(e, env);
+            eval_expr(fn_hmap, e, env);
         }
-        Statement::VarDec(name,t,s) => {
+        Statement::VarDec(name,t,ss) => {
             let (_,at) = t;
-            let temp_val: Val = eval_fcall_or_expr(fn_hmap, env, s);
+            let expr =  match &ss.1 {
+                Statement::Expr(e) => e,
+                _ => panic!("you can only assign an expression")
+            };
+            let temp_val: Val = eval_expr(fn_hmap, &expr, env);
             env[i].insert(name.to_owned(), (temp_val,*at));
         }
-        Statement::VarAssign(name,s) => {
-            let v = eval_fcall_or_expr(fn_hmap, env, s);
+        Statement::VarAssign(name, expr) => {
+            let v = eval_expr(fn_hmap, expr, env);
             var_ass(name, v, env, i);
         }
         Statement::Node(l,r) => {
             interpret_statement(fn_hmap, env, l);
             interpret_statement(fn_hmap, env, r);
         }
-        Statement::FCall(name, s_arg) => {
-            let mut vec: Vec<Val> = Vec::new();
-            eval_arg(fn_hmap, s_arg, env, &mut vec);
-            interpret_fn(name, fn_hmap, &mut vec);
-        }
-        Statement::Return(s) => {
-            println!("{:?}",&s);
+        Statement::Return(e) => {
             let (_, t) = *env[0].get("return").unwrap();
-            let temp_val: Val = eval_fcall_or_expr(fn_hmap, env, s);
+            let temp_val: Val = eval_expr(fn_hmap, e, env);
             env[0].insert("return".to_owned(), (temp_val, t));
             return;
         }
-        Statement::Condition(s_cond, s_if, s_else) => {
-            let c_val = eval_fcall_or_expr(fn_hmap, env, s_cond);
+        Statement::Condition(cond_e, s_if, s_else) => {
+            let c_val = eval_expr(fn_hmap, cond_e, env);
             let cond: bool;
             match c_val {
                 Val::Bool(v) =>{
@@ -1276,9 +1259,9 @@ fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<
             }
             env.pop();
         }
-        Statement::WhileLoop(s_cond, s_loop) => {
+        Statement::WhileLoop(cond, s_loop) => {
             env.push(HashMap::new());
-            interpret_while(fn_hmap, env, s_loop, s_cond);
+            interpret_while(fn_hmap, env, s_loop, cond);
             env.pop();
         }
         Statement::Nil => {
@@ -1290,8 +1273,8 @@ fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<
     }
 }
 
-fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, s_loop: &SpanStatement, s_cond: &SpanStatement) {
-    let c_val = eval_fcall_or_expr(fn_hmap, env, s_cond);
+fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, s_loop: &SpanStatement, cond_se: &SpanExpr) {
+    let c_val = eval_expr(fn_hmap, cond_se, env);
     let cond: bool;
     match c_val {
         Val::Bool(v) =>{
@@ -1306,16 +1289,15 @@ fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<
     }
     if cond {
         interpret_statement(fn_hmap, env, s_loop);
-        interpret_while(fn_hmap, env, s_loop, s_cond);
+        interpret_while(fn_hmap, env, s_loop, cond_se);
     }else {
         return
     }
 }
-
 fn eval_arg(fn_hmap: &HashMap<String, &Statement>, s_arg: &SpanStatement, env: &Vec<HashMap<String, (Val, Type)>>, vec: &mut Vec<Val>) {
     match &s_arg.1 {
-        Statement::Expr(_) | Statement::FCall(_,_) => {
-            vec.push(eval_fcall_or_expr(fn_hmap, env, s_arg));
+        Statement::Expr(e) => {
+            vec.push(eval_expr(fn_hmap, e, env));
         }
         Statement::Node(l, r) => {
             eval_arg(fn_hmap, &l, env, vec);
@@ -1323,27 +1305,6 @@ fn eval_arg(fn_hmap: &HashMap<String, &Statement>, s_arg: &SpanStatement, env: &
         }
         _ => {
             panic!("invalid arguments");
-        }
-    }
-}
-
-
-fn eval_fcall_or_expr(fn_hmap: &HashMap<String, &Statement>, env: &Vec<HashMap<String, (Val, Type)>>, body: &SpanStatement) -> Val {
-    let (_, s) = body;
-    match s {
-        Statement::Expr(e) => {
-            return eval_expr(e, env);
-        }
-        Statement::FCall(st, arg) => {
-            let mut vec: Vec<Val> = Vec::new();
-            eval_arg(fn_hmap, arg, env, &mut vec);
-            return interpret_fn(&st, fn_hmap, &mut vec)
-        }
-        Statement::Return(ss) => {
-            eval_fcall_or_expr(fn_hmap, env, ss)
-        }
-        _ => {
-            panic!("Can only take expr, fcall or return as argument")
         }
     }
 }
@@ -1398,6 +1359,9 @@ impl<'a> Compiler<'a> {
                 let var = self.get_variable(&s);
                 return self.builder.build_load(*var, &s).into_int_value();
             }
+            Expr::FCall(name, s_arg) => {
+                self.compile_fcall(name, s_arg)
+            }
             Expr::Num(i) => self.context.i32_type().const_int(i.to_owned() as u64, false),
 
             Expr::BinOp(l, (_, op), r) => {
@@ -1444,17 +1408,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile_expr_or_fcall(&self, ss: &SpanStatement) -> IntValue {
-        match &ss.1 {
-            Statement::Expr(se) => self.compile_expr(se),
-            Statement::Return(ss) => self.compile_expr_or_fcall(ss),
-            Statement::FCall(name, s_arg) => {
-                self.compile_fcall(name, s_arg)
-            }
-            _ => panic!("expected expr or fcall or ret")
-        }
-    }
-
     /// Creates a new stack allocation instruction in the entry block of the function.
     fn create_entry_block_alloca(&mut self, name: &str, b: &Builder) -> PointerValue {
         //let builder = self.context.create_builder();
@@ -1477,33 +1430,34 @@ impl<'a> Compiler<'a> {
             Statement::Expr(se) => {
                 self.compile_expr(se).as_instruction().unwrap();
             }
-            Statement::VarAssign(name, stmnt) => {
+            Statement::VarAssign(name, e) => {
                 let var = self.get_variable(&name);
-                let rexp = self.compile_expr_or_fcall(&stmnt);
+                let rexp = self.compile_expr(&e);
                 self.builder.build_store(*var, rexp);
             }
             Statement::VarDec(name, _, ss) => {
                 let alloca = self.create_entry_block_alloca(&name, &self.builder);
-                let expr = self.compile_expr_or_fcall(&ss);
+                let e =  match &ss.1 {
+                    Statement::Expr(e) => e,
+                    _ => panic!("you can only assign an expression")
+                };
+                let expr = self.compile_expr(&e);
                 self.builder.build_store(alloca, expr);
             }
             Statement::Node(lss,rss) => {
                 self.compile_statement(&lss);
                 self.compile_statement(&rss);
             }
-            Statement::Return(ss) => {
-                self.builder.build_return(Some(&self.compile_expr_or_fcall(&ss)));
+            Statement::Return(e) => {
+                self.builder.build_return(Some(&self.compile_expr(&e)));
                 return;
             }
-            Statement::FCall(name, s_arg) => {
-                self.compile_fcall(name, s_arg);
-            }
             Statement::Nil => return,
-            Statement::Condition(cond_ss, then_ss, else_ss) => {
+            Statement::Condition(cond_e, then_ss, else_ss) => {
                 let parent = self.fn_value();
                 let zero_const = self.context.i32_type().const_int(0,false);
 
-                let cond = self.compile_expr_or_fcall(cond_ss);
+                let cond = self.compile_expr(cond_e);
                 let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "condition");
 
                 // build branch
@@ -1527,7 +1481,7 @@ impl<'a> Compiler<'a> {
                 self.builder.position_at_end(&cont_bb);
             }
 
-            Statement::WhileLoop(cond_ss, body_ss) => {
+            Statement::WhileLoop(cond_e, body_ss) => {
                 let parent = self.fn_value();
                 let zero_const = self.context.i32_type().const_int(0,false);
 
@@ -1537,7 +1491,7 @@ impl<'a> Compiler<'a> {
 
                 self.builder.build_unconditional_branch(&loop_head_bb);
                 self.builder.position_at_end(&loop_head_bb);
-                let cond = self.compile_expr_or_fcall(cond_ss);
+                let cond = self.compile_expr(cond_e);
                 let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "cond");
                 self.builder.build_conditional_branch(cond, &loop_body_bb, &cont_bb);
 
@@ -1581,8 +1535,8 @@ impl<'a> Compiler<'a> {
     }
     fn arg_to_vec(&self, ss_arg: &SpanStatement, vec: &mut Vec<BasicValueEnum>) {
         match &ss_arg.1 {
-            Statement::Expr(_) | Statement::FCall(_,_) => {
-                vec.push(self.compile_expr_or_fcall(&ss_arg).into());
+            Statement::Expr(e)  => {
+                vec.push(self.compile_expr(&e).into());
             }
             Statement::Node(lss, rss) => {
                 self.arg_to_vec(lss, vec);
@@ -1641,9 +1595,11 @@ impl<'a> Compiler<'a> {
 fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
             // "fn f1() -> i32 {if true {return 1}}"
     let (_, (s, e)) = parse_outer_statement(Span::new(
-        "fn f2(x: i32, y: i32) -> i32 {
+        "
+        fn f2(x: i32, y: i32) -> i32 {
             return x*y
-        } fn f1() -> i32 {
+        }
+        fn f1() -> i32 {
             let a : i32 = f2(5,3);
             let b : i32 = 0;
             while b != 10 {
@@ -1652,10 +1608,13 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
             return a
         }"
     )).unwrap();
-    //println!("{:?} ", e)
+    //println!("{:?} ", dump_statement(&(s,e)));
+    //let (_, (s, e)) = parse_statement(Span::new("return x*y;")).unwrap();
+    //println!("{:?} ", &e);
     //let hash_map = HashMap::new();
     //let mut args: Vec<Val> = Vec::new();
     //println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
+    
     let context = Context::create();
     let module = context.create_module("expr");
     let builder = context.create_builder();
