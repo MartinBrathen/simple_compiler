@@ -12,9 +12,7 @@ use inkwell::{
     types::{BasicTypeEnum, AnyTypeEnum, FunctionType, IntType},
     values::{BasicValueEnum, FloatValue, FunctionValue, InstructionValue, IntValue, PointerValue},
     FloatPredicate, OptimizationLevel, IntPredicate,
-	//types::AnyTypeEnum::as_int_type
-	//types::BasicTypeEnum::as_int_type
-	//values::AnyValueEnum::as_int_value
+
 };
 
 use std::error::Error;
@@ -760,15 +758,37 @@ fn do_typechecking(fn_hmap: &HashMap<String, &Statement>) {
 fn typecheck_fdef(fn_hmap: &HashMap<String, &Statement>, fnc: &Statement) {
 
     match fnc {
-        Statement::FDef(_,rt,_,bss) => {
-            let mut env: Vec<HashMap<String, Type>>  = Vec::new();
-            if typecheck_statement(fn_hmap, &mut env, bss, rt.1).0 != rt.1 {
+        Statement::FDef(_,rt,param,bss) => {
+            let mut env: Vec<HashMap<String, Type>> = Vec::new();
+            env.push(HashMap::new());
+            typecheck_param(fn_hmap, &mut env, param);
+            if typecheck_statement(fn_hmap, &mut env, bss, rt.1) != (rt.1, true) {
                 panic!("wrong return type")
             }
         }
         _ => panic!("not a function"),
     }
-    
+}
+
+fn typecheck_param<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, Type>>, s_param: &'a SpanStatement) {
+    let i = env.len()-1;
+    let (_, param) = s_param;
+    match param {
+        Statement::Nil => {
+            return
+        }
+        Statement::Node(lp, rp) => {
+            typecheck_param(fn_hmap, env, rp);
+            typecheck_param(fn_hmap, env, lp);
+        }
+        Statement::VarDec(name, ts,_) => {
+            let (_,t) = ts;
+            env[i].insert(name.to_string(), *t);
+        }
+        _ => {
+            panic!("Bad argument")
+        }
+    }
 }
 
 fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, Type>>, stmnt: &SpanStatement, ret_type: Type) -> (Type, bool) { // bool is in case of explicit return
@@ -834,7 +854,9 @@ fn typecheck_statement(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<Hash
             }
             return (ret_type, true);
         }
-        Statement::VarDec(_,st, ss) => {
+        Statement::VarDec(name,st, ss) => {
+            let i = env.len()-1;
+            env[i].insert(name.to_string(), st.1);
             let (rt, _) = typecheck_statement(fn_hmap, env, &ss, st.1);
             if rt != st.1 {
                 panic!("cant assign wrong type")
@@ -1207,35 +1229,44 @@ fn var_ass(name: &str, v: Val, env: &mut Vec<HashMap<String, (Val, Type)>>, i: u
     }
 }
 
-fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, body: &'a SpanStatement){
+fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, body: &'a SpanStatement) -> bool{
     let i = env.len()-1;
     let (_, bdy) = body; // remove span
     match bdy {
         Statement::Expr(e) => {
             eval_expr(fn_hmap, e, env);
+            return false;
         }
         Statement::VarDec(name,t,ss) => {
             let (_,at) = t;
-            let expr =  match &ss.1 {
-                Statement::Expr(e) => e,
+            let temp_val: Val;
+            match &ss.1 {
+                Statement::Expr(e) => temp_val = eval_expr(fn_hmap, &e, env),
+                Statement::Nil => temp_val = Val::Nil,
                 _ => panic!("you can only assign an expression")
             };
-            let temp_val: Val = eval_expr(fn_hmap, &expr, env);
+            
             env[i].insert(name.to_owned(), (temp_val,*at));
+            return false;
         }
         Statement::VarAssign(name, expr) => {
             let v = eval_expr(fn_hmap, expr, env);
             var_ass(name, v, env, i);
+            return false;
         }
         Statement::Node(l,r) => {
-            interpret_statement(fn_hmap, env, l);
-            interpret_statement(fn_hmap, env, r);
+            let lv = interpret_statement(fn_hmap, env, l);
+            if lv {
+                return true;
+            }
+            let rv = interpret_statement(fn_hmap, env, r);
+            return rv
         }
         Statement::Return(e) => {
             let (_, t) = *env[0].get("return").unwrap();
             let temp_val: Val = eval_expr(fn_hmap, e, env);
             env[0].insert("return".to_owned(), (temp_val, t));
-            return;
+            return true;
         }
         Statement::Condition(cond_e, s_if, s_else) => {
             let c_val = eval_expr(fn_hmap, cond_e, env);
@@ -1252,28 +1283,30 @@ fn interpret_statement<'a>(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<
                 }
             }
             env.push(HashMap::new());
+            let rv: bool;
             if cond {
-                interpret_statement(fn_hmap, env, s_if);
+                rv = interpret_statement(fn_hmap, env, s_if);
             }else{
-                interpret_statement(fn_hmap, env, s_else);
+                rv = interpret_statement(fn_hmap, env, s_else);
             }
             env.pop();
+            return rv;
         }
         Statement::WhileLoop(cond, s_loop) => {
             env.push(HashMap::new());
-            interpret_while(fn_hmap, env, s_loop, cond);
+            let rv = interpret_while(fn_hmap, env, s_loop, cond);
             env.pop();
+            return rv;
         }
         Statement::Nil => {
-            return;
+            return false;
         }
-        _ => { // does not support loops and ifs yeet
-            panic!("Does not interpret FDef") 
-        }
+        _ => panic!("Does not interpret FDef") 
+        
     }
 }
 
-fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, s_loop: &SpanStatement, cond_se: &SpanExpr) {
+fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<String, (Val, Type)>>, s_loop: &SpanStatement, cond_se: &SpanExpr) -> bool {
     let c_val = eval_expr(fn_hmap, cond_se, env);
     let cond: bool;
     match c_val {
@@ -1288,10 +1321,11 @@ fn interpret_while(fn_hmap: &HashMap<String, &Statement>, env: &mut Vec<HashMap<
         }
     }
     if cond {
-        interpret_statement(fn_hmap, env, s_loop);
-        interpret_while(fn_hmap, env, s_loop, cond_se);
+        let lv = interpret_statement(fn_hmap, env, s_loop);
+        let rv = interpret_while(fn_hmap, env, s_loop, cond_se);
+        return lv || rv;
     }else {
-        return
+        return false;
     }
 }
 fn eval_arg(fn_hmap: &HashMap<String, &Statement>, s_arg: &SpanStatement, env: &Vec<HashMap<String, (Val, Type)>>, vec: &mut Vec<Val>) {
@@ -1425,34 +1459,41 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a command into (InstructionValue, b:bool)
     /// `b` indicates that its a return value of the basic block
-    fn compile_statement(&mut self, statement: &SpanStatement) {
+    fn compile_statement(&mut self, statement: &SpanStatement) -> (IntValue, bool) {
         match &statement.1 {
             Statement::Expr(se) => {
-                self.compile_expr(se).as_instruction().unwrap();
+                (self.compile_expr(se), false)
             }
             Statement::VarAssign(name, e) => {
                 let var = self.get_variable(&name);
                 let rexp = self.compile_expr(&e);
                 self.builder.build_store(*var, rexp);
+                return (rexp, false);
             }
             Statement::VarDec(name, _, ss) => {
                 let alloca = self.create_entry_block_alloca(&name, &self.builder);
-                let e =  match &ss.1 {
-                    Statement::Expr(e) => e,
-                    _ => panic!("you can only assign an expression")
-                };
-                let expr = self.compile_expr(&e);
-                self.builder.build_store(alloca, expr);
+                let temp_val: IntValue;
+                match &ss.1 {
+                    Statement::Expr(e) => temp_val = self.compile_expr(&e),
+                    Statement::Nil => temp_val = self.context.i32_type().const_int(0,false),
+                    _ => panic!("only nil and expr allowed for declaration")
+                }
+                self.builder.build_store(alloca, temp_val);
+                return (temp_val, false);
             }
             Statement::Node(lss,rss) => {
-                self.compile_statement(&lss);
-                self.compile_statement(&rss);
+                let ret = self.compile_statement(&lss);
+                if ret.1 {
+                    return ret;
+                }
+                self.compile_statement(&rss)
             }
             Statement::Return(e) => {
-                self.builder.build_return(Some(&self.compile_expr(&e)));
-                return;
+                let expr = self.compile_expr(&e);
+                self.builder.build_return(Some(&expr));
+                return (expr, true);
             }
-            Statement::Nil => return,
+            Statement::Nil => return (self.context.i32_type().const_int(0,false), false),
             Statement::Condition(cond_e, then_ss, else_ss) => {
                 let parent = self.fn_value();
                 let zero_const = self.context.i32_type().const_int(0,false);
@@ -1469,16 +1510,25 @@ impl<'a> Compiler<'a> {
 
                 // build then block
                 self.builder.position_at_end(&then_bb);
-                self.compile_statement(then_ss);
+                let then_ret = self.compile_statement(then_ss);
                 self.builder.build_unconditional_branch(&cont_bb);
 
                 // build else block
                 self.builder.position_at_end(&else_bb);
-                self.compile_statement(else_ss);
+                let else_ret = self.compile_statement(else_ss);
                 self.builder.build_unconditional_branch(&cont_bb);
 
                 // emit merge block
                 self.builder.position_at_end(&cont_bb);
+
+                let phi = self.builder.build_phi(self.context.i32_type(), "iftmp");
+
+                phi.add_incoming(&[
+                    (&then_ret.0, &then_bb),
+                    (&else_ret.0, &else_bb)
+                ]);
+
+                (phi.as_basic_value().into_int_value(), then_ret.1 || else_ret.1)
             }
 
             Statement::WhileLoop(cond_e, body_ss) => {
@@ -1496,10 +1546,12 @@ impl<'a> Compiler<'a> {
                 self.builder.build_conditional_branch(cond, &loop_body_bb, &cont_bb);
 
                 self.builder.position_at_end(&loop_body_bb);
-                self.compile_statement(body_ss);
+                let loop_ret = self.compile_statement(body_ss);
                 self.builder.build_unconditional_branch(&loop_head_bb);
 
                 self.builder.position_at_end(&cont_bb);
+
+                return loop_ret;
             }
             
             
@@ -1594,7 +1646,13 @@ impl<'a> Compiler<'a> {
 
 fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
             // "fn f1() -> i32 {if true {return 1}}"
-    let (_, (s, e)) = parse_outer_statement(Span::new(
+    let se = parse_outer_statement(Span::new(
+        /*"
+            fn f1(a: i32) -> i32 {
+                a = 2;
+                return a;
+            }
+        "*/
         "
         fn f2(x: i32, y: i32) -> i32 {
             return x*y
@@ -1605,15 +1663,20 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
             while b != 10 {
                 b = b + 1;
             }
-            return a
+            if true {
+                let a: i32;
+                a = 1;
+            }
+            return a + b
         }"
-    )).unwrap();
+    )).unwrap().1;
     //println!("{:?} ", dump_statement(&(s,e)));
-    //let (_, (s, e)) = parse_statement(Span::new("return x*y;")).unwrap();
     //println!("{:?} ", &e);
-    //let hash_map = HashMap::new();
+    let hash_map = HashMap::new();
     //let mut args: Vec<Val> = Vec::new();
-    //println!("{:?}", interpret_fn("f1",&build_fn_hash(&(s,e), hash_map), &mut args));
+    let fn_hmap = build_fn_hash(&se, hash_map);
+    do_typechecking(&fn_hmap);
+    //println!("{:?}", interpret_fn("f1",&fn_hmap, &mut args));
     
     let context = Context::create();
     let module = context.create_module("expr");
@@ -1633,6 +1696,6 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
         //&fpm,
     };
 
-    compiler.compile_program(&(s,e));
+    compiler.compile_program(&se);
     module.print_to_stderr();
 }
