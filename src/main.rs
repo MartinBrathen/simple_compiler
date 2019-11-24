@@ -1645,7 +1645,7 @@ impl<'a> Compiler<'a> {
 
 fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
             // "fn f1() -> i32 {if true {return 1}}"
-    let se = parse_outer_statement(Span::new(
+    let ss = parse_outer_statement(Span::new(
         /*"
             fn f1(a: i32) -> i32 {
                 a = 2;
@@ -1671,14 +1671,24 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
             return a + b;
         }"
     )).unwrap().1;
-    //println!("{:?} ", dump_statement(&(s,e)));
-    //println!("{:?} ", &e);
+
     let hash_map = HashMap::new();
-    //let mut args: Vec<Val> = Vec::new();
-    let fn_hmap = build_fn_hash(&se, hash_map);
+    let fn_hmap = build_fn_hash(&ss, hash_map);
+
+    // Typechecker
     do_typechecking(&fn_hmap);
-    //println!("{:?}", interpret_fn("f1",&fn_hmap, &mut args));
+
+    // Compile into llvm ir
+    compile(&ss);
     
+    // Interpret program
+    let mut args: Vec<Val> = Vec::new();
+    println!("Result from interpreter: {:?}", interpret_fn("f1",&fn_hmap, &mut args));
+    
+    
+}
+
+fn compile(ss: &SpanStatement) {
     let context = Context::create();
     let module = context.create_module("f1");
     let builder = context.create_builder();
@@ -1697,7 +1707,7 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
         //&fpm,
     };
 
-    compiler.compile_program(&se);
+    compiler.compile_program(ss);
 
 
     module.print_to_stderr();
