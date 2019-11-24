@@ -27,7 +27,6 @@ use nom::{
 };
 
 use std::collections::HashMap;
-
 use nom_locate::LocatedSpan;
 
 type Span<'a> = LocatedSpan<&'a str>;
@@ -1443,7 +1442,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Creates a new stack allocation instruction in the entry block of the function.
-    fn create_entry_block_alloca(&mut self, name: &str, b: &Builder) -> PointerValue {
+    fn create_block_alloca(&mut self, name: &str, b: &Builder) -> PointerValue {
         //let builder = self.context.create_builder();
 
         //let entry = self.fn_value().get_first_basic_block().unwrap();
@@ -1471,7 +1470,7 @@ impl<'a> Compiler<'a> {
                 return (rexp, false);
             }
             Statement::VarDec(name, _, ss) => {
-                let alloca = self.create_entry_block_alloca(&name, &self.builder);
+                let alloca = self.create_block_alloca(&name, &self.builder);
                 let temp_val: IntValue;
                 match &ss.1 {
                     Statement::Expr(e) => temp_val = self.compile_expr(&e),
@@ -1632,7 +1631,7 @@ impl<'a> Compiler<'a> {
 
         for (i, arg) in fn_val.get_param_iter().enumerate() {
             let arg_name = par_vec[i].0.as_str();
-            let alloca = self.create_entry_block_alloca(arg_name, &self.builder);
+            let alloca = self.create_block_alloca(arg_name, &self.builder);
 
             self.builder.build_store(alloca, arg);
 
@@ -1660,14 +1659,16 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
         fn f1() -> i32 {
             let a : i32 = f2(5,3);
             let b : i32 = 0;
+            a = a + 1;
             while b != 10 {
                 b = b + 1;
             }
             if true {
-                let a: i32;
-                a = 1;
+                a = a + 3;
+            } else {
+                a = a + 5;
             }
-            return a + b
+            return a + b;
         }"
     )).unwrap().1;
     //println!("{:?} ", dump_statement(&(s,e)));
@@ -1679,7 +1680,7 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
     //println!("{:?}", interpret_fn("f1",&fn_hmap, &mut args));
     
     let context = Context::create();
-    let module = context.create_module("expr");
+    let module = context.create_module("f1");
     let builder = context.create_builder();
     let fpm = PassManager::create(&module);
     fpm.initialize();
@@ -1697,5 +1698,7 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
     };
 
     compiler.compile_program(&se);
+
+
     module.print_to_stderr();
 }
