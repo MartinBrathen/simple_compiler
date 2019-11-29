@@ -94,3 +94,38 @@ white_space\
 | '\n'\
 | '\t'\
 ;
+
+
+# Example program
+```
+fn f2(x: i32, y: i32) -> i32 {
+    return x*y
+}
+fn f1() -> i32 {
+    let a : i32 = f2(5,3);
+    let b : i32 = 0;
+    while b != 10 {
+        b = b + 1;
+    }
+    if true && true {
+        a = a + 3;
+    } else {
+        a = a + 5;
+    }
+    return a + b;
+}
+```
+
+# Requirements
+
+- Define a minimal subset of Rust, including 
+  - Function definitions
+  - Commands (let, assignment, if then (else), while)
+  - Expressions (includig function calls)
+  - Primitive types (boolean, i32) and their literals
+  - Explicit types everywhere
+  - Explicit return(s)
+
+All of these requirements were met. Did not find any other requirements in the README.md.
+
+The implementation was only done by me.
