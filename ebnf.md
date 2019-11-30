@@ -126,6 +126,6 @@ fn f1() -> i32 {
   - Explicit types everywhere
   - Explicit return(s)
 
-All of these requirements were met. Did not find any other requirements in the README.md.
+All of these requirements were met, precedence climbing was also implemented. Did not find any other requirements in the README.md.
 
 The implementation was only done by me.
