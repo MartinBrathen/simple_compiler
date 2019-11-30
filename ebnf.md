@@ -128,4 +128,4 @@ fn f1() -> i32 {
 
 All of these requirements were met, precedence climbing was also implemented. Did not find any other requirements in the README.md.
 
-The implementation was only done by me.
+I used [main_span_expr.rs](https://gitlab.henriktjader.com/pln/d7050e/blob/master/examples/main_span_expr.rs) as a starting point for my parser, and did the rest myself.
