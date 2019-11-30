@@ -1442,19 +1442,21 @@ impl<'a> Compiler<'a> {
     }
 
     /// Creates a new stack allocation instruction in the entry block of the function.
-    fn create_block_alloca(&mut self, name: &str, b: &Builder) -> PointerValue {
-        //let builder = self.context.create_builder();
+    fn create_entry_block_alloca(&mut self, name: &str) -> PointerValue {
+        let builder = self.context.create_builder();
 
-        //let entry = self.fn_value().get_first_basic_block().unwrap();
+        let entry = self.fn_value().get_first_basic_block().unwrap();
 
-        //match entry.get_first_instruction() {
-        //    Some(first_instr) => builder.position_before(&first_instr),
-        //    None => builder.position_at_end(&entry),
-        //}
-        let alloca = b.build_alloca(self.context.i32_type(), name);
+        match entry.get_first_instruction() {
+            Some(first_instr) => builder.position_before(&first_instr),
+            None => builder.position_at_end(&entry),
+        }
+        let alloca = builder.build_alloca(self.context.i32_type(), name);
         self.variables.insert(name.to_string(), alloca);
         alloca
     }
+
+        
 
     /// Compiles a command into (InstructionValue, b:bool)
     /// `b` indicates that its a return value of the basic block
@@ -1470,7 +1472,7 @@ impl<'a> Compiler<'a> {
                 return (rexp, false);
             }
             Statement::VarDec(name, _, ss) => {
-                let alloca = self.create_block_alloca(&name, &self.builder);
+                let alloca = self.create_entry_block_alloca(&name);
                 let temp_val: IntValue;
                 match &ss.1 {
                     Statement::Expr(e) => temp_val = self.compile_expr(&e),
@@ -1631,7 +1633,7 @@ impl<'a> Compiler<'a> {
 
         for (i, arg) in fn_val.get_param_iter().enumerate() {
             let arg_name = par_vec[i].0.as_str();
-            let alloca = self.create_block_alloca(arg_name, &self.builder);
+            let alloca = self.create_entry_block_alloca(arg_name);
 
             self.builder.build_store(alloca, arg);
 
@@ -1659,11 +1661,10 @@ fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -
         fn f1() -> i32 {
             let a : i32 = f2(5,3);
             let b : i32 = 0;
-            a = a + 1;
             while b != 10 {
                 b = b + 1;
             }
-            if true {
+            if true && true {
                 a = a + 3;
             } else {
                 a = a + 5;
