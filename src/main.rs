@@ -26,6 +26,9 @@ use nom::{
     IResult,
 };
 
+use std::fs;
+use std::env;
+
 use std::collections::HashMap;
 use nom_locate::LocatedSpan;
 
@@ -1645,33 +1648,15 @@ impl<'a> Compiler<'a> {
 
 }
 
-fn main() { // "fn f1() -> i32{let a : i32 = f2(5,3); a} fn f2(x: i32, y: i32) -> i32{return x*y}" "fn f1() -> i32{let a : i32 = 10;while a != 0 {a = a - 1;}a}
-            // "fn f1() -> i32 {if true {return 1}}"
-    let ss = parse_outer_statement(Span::new(
-        /*"
-            fn f1(a: i32) -> i32 {
-                a = 2;
-                return a;
-            }
-        "*/
-        "
-        fn f2(x: i32, y: i32) -> i32 {
-            return x*y
-        }
-        fn f1() -> i32 {
-            let a : i32 = f2(5,3);
-            let b : i32 = 0;
-            while b != 10 {
-                b = b + 1;
-            }
-            if true && true {
-                a = a + 3;
-            } else {
-                a = a + 5;
-            }
-            return a + b;
-        }"
-    )).unwrap().1;
+fn main() {
+
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 1 {
+        panic!("please provide a file path as the first argument");
+    }
+    let filename = &args[2];
+    let program = fs::read_to_string(filename).unwrap();
+    let ss = parse_outer_statement(Span::new(&program)).unwrap().1;
 
     let hash_map = HashMap::new();
     let fn_hmap = build_fn_hash(&ss, hash_map);
