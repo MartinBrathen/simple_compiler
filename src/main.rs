@@ -1423,7 +1423,7 @@ impl<'a> Compiler<'a> {
                 let rv = self.compile_expr(&r);
                 match op {
                     Comp::Equal => self.builder.build_int_compare(inkwell::IntPredicate::EQ, lv, rv, "eq"),
-                    Comp::NotEqual => self.builder.build_int_compare(inkwell::IntPredicate::NE, lv, rv, "eq"),
+                    Comp::NotEqual => self.builder.build_int_compare(inkwell::IntPredicate::NE, lv, rv, "ne"),
                 }
             }
             Expr::UBOp((_, op), r) => {
@@ -1500,10 +1500,8 @@ impl<'a> Compiler<'a> {
             Statement::Nil => return (self.context.i32_type().const_int(0,false), false),
             Statement::Condition(cond_e, then_ss, else_ss) => {
                 let parent = self.fn_value();
-                let zero_const = self.context.i32_type().const_int(0,false);
 
                 let cond = self.compile_expr(cond_e);
-                let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "condition");
 
                 // build branch
                 let then_bb = self.context.append_basic_block(&parent, "then");
@@ -1537,21 +1535,29 @@ impl<'a> Compiler<'a> {
 
             Statement::WhileLoop(cond_e, body_ss) => {
                 let parent = self.fn_value();
-                let zero_const = self.context.i32_type().const_int(0,false);
+                let entry = parent.get_last_basic_block().unwrap();
 
                 let loop_head_bb = self.context.append_basic_block(&parent, "lhead");
                 let loop_body_bb = self.context.append_basic_block(&parent, "lbody");
                 let cont_bb = self.context.append_basic_block(&parent, "cont");
 
                 self.builder.build_unconditional_branch(&loop_head_bb);
-                self.builder.position_at_end(&loop_head_bb);
-                let cond = self.compile_expr(cond_e);
-                let cond = self.builder.build_int_compare(IntPredicate::NE, cond, zero_const, "cond");
-                self.builder.build_conditional_branch(cond, &loop_body_bb, &cont_bb);
 
                 self.builder.position_at_end(&loop_body_bb);
                 let loop_ret = self.compile_statement(body_ss);
                 self.builder.build_unconditional_branch(&loop_head_bb);
+
+                self.builder.position_at_end(&loop_head_bb);
+
+                let phi = self.builder.build_phi(self.context.i32_type(), "whiletmp");
+
+                phi.add_incoming(&[
+                    (&self.context.i32_type().const_int(0,false), &entry),
+                    (&loop_ret.0, &loop_body_bb)
+                ]);
+
+                let cond = self.compile_expr(cond_e);
+                self.builder.build_conditional_branch(cond, &loop_body_bb, &cont_bb);
 
                 self.builder.position_at_end(&cont_bb);
 
@@ -1676,7 +1682,7 @@ fn main() {
 
 fn compile(ss: &SpanStatement) {
     let context = Context::create();
-    let module = context.create_module("f1");
+    let module = context.create_module("program");
     let builder = context.create_builder();
     let fpm = PassManager::create(&module);
     fpm.initialize();
@@ -1694,7 +1700,14 @@ fn compile(ss: &SpanStatement) {
     };
 
     compiler.compile_program(ss);
-
+    let execution_engine = module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
 
     module.print_to_stderr();
+
+    let fun_expr: JitFunction<ExprFunc> =
+                unsafe { execution_engine.get_function("f1.1").ok().unwrap() };
+
+            unsafe {
+                println!("\nexecution result : {}", fun_expr.call());
+            }
 }
