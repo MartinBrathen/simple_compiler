@@ -1,9 +1,6 @@
 # llvm-ir code generated for example program([source](https://github.com/MartinBrathen/simple_compiler/blob/master/ebnf.md))
 
 ```
-; ModuleID = 'f1'
-source_filename = "f1"
-
 declare i32 @f1()
 
 define i32 @f2(i32, i32) {
@@ -28,14 +25,14 @@ entry:
   br label %lhead
 
 lhead:                                            ; preds = %lbody, %entry
-  %b1 = load i32, i32* %b
-  %eq = icmp ne i32 %b1, 10
-  %cond = icmp ne i1 %eq, i32 0
-  br i1 %cond, label %lbody, label %cont
+  %whiletmp = phi i32 [ 0, %entry ], [ %sum, %lbody ]
+  %b2 = load i32, i32* %b
+  %ne = icmp ne i32 %b2, 10
+  br i1 %ne, label %lbody, label %cont
 
 lbody:                                            ; preds = %lhead
-  %b2 = load i32, i32* %b
-  %sum = add i32 %b2, 1
+  %b1 = load i32, i32* %b
+  %sum = add i32 %b1, 1
   store i32 %sum, i32* %b
   br label %lhead
 
@@ -66,6 +63,8 @@ ifcont:                                           ; preds = %else, %then
 # Phi nodes and allocations
 
 A phi node is used after every if statement, to decide which branch's assignments are to be used.
+
+Phi nodes are also used in the while loop's head, because it can be entered from above the loop and also from within its body.
 
 Allocations were used when declaring new variables and functions. all variables are stored in the entry block, even variable declarations inside loops and if statement, which is not ideal.
 
