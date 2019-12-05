@@ -70,6 +70,18 @@ fn fun() -> i32 {
 }
 ```
 
+### Example 3
+
+```
+fn fun() -> i32 {
+  let mut x = 5;
+  let p1 = &mut x; // mutable borrow here
+  let y = x; // read from variable that is mutably borrowed
+  *p1 = 10; // usage of mutable borrow.
+  return y;
+}
+```
+
 ## Well formed borrow
 
 ### Example 1
@@ -106,4 +118,5 @@ this rule is probably stricter than the corresponding rule in rust, since rust s
 is only used in the current scope before being assigned a new value.
 - Function returning reference to a value that is owned by itself.
 - Mutable reference is used while another reference exist to same variable.
-- Variable is assigned to while a reference exists to it.
+- Variable is assigned to while borrowed.
+- Variable is read while mutably borrowed.
