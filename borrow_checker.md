@@ -84,6 +84,20 @@ fn fun() -> i32 {
 }
 ```
 
+### Example 2
+
+```
+fn fun() -> i32 {
+  let mut x = 5;
+  x = 1; // assignment before borrow
+  let p = &x; // borrow here
+  // no assignment to borrowed value
+  let y = *p; // use of borrowed value that has been changed
+  x = 2; // assignment after borrow
+  return x+y;
+}
+```
+
 # Borrowchecking rules
 
 I didn't implement references/borrow checking, but here are the rules that I would use to check for ill formed borrows:
