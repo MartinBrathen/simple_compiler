@@ -1,8 +1,9 @@
-# Ill formed borrow
+# Lifetime issues
+## Ill formed borrow
 
 Following are two example programs where ill formed borrows are demonstrated.
 
-## Example 1
+### Example 1
 ```
 fn fun() -> i32 {
   let x: &i32;
@@ -17,7 +18,7 @@ fn fun() -> i32 {
   return 0;
 }
 ```
-## Example 2
+### Example 2
 ```
 fn fun() -> &i32 {
   let x: &i32;
@@ -29,7 +30,7 @@ fn fun() -> &i32 {
 }
 ```
 
-# Well formed borrow
+## Well formed borrow
 
 This example program fixed the issues that were present in the previous programs.
 
@@ -43,6 +44,46 @@ fn fun() -> i32 {
 }
 ```
 
+# Aliasing
+
+## Ill formed borrow
+
+### Example 1
+```
+fn fun() -> i32 {
+  let mut x = 5;
+  let p1 = &mut x; // mutable borrow here
+  let p2 = &x; // immutable borrow here
+  *p1 = 10; // usage of mutable borrow, while another borrow exists. ERROR
+  return *p2; // immutable borrow is used here
+}
+```
+
+### Example 2
+
+```
+fn fun() -> i32 {
+  let mut x = 5;
+  let p = &x; // borrow here
+  x = 1;  // assignment to borrowed value
+  return *p; // use of borrowed value that has been changed
+}
+```
+
+## Well formed borrow
+
+### Example 1
+```
+fn fun() -> i32 {
+  let mut x = 5;
+  let p1 = &mut x; // mutable borrow here
+  *p1 = 10; // mutable borrow used here.
+  let p2 = &x; // immutable borrow here.
+  // no usage of mutable borrow here
+  return *p2; // immutable borrow is used here 
+}
+```
+
 # Borrowchecking rules
 
 I didn't implement references/borrow checking, but here are the rules that I would use to check for ill formed borrows:
@@ -50,5 +91,5 @@ I didn't implement references/borrow checking, but here are the rules that I wou
 this rule is probably stricter than the corresponding rule in rust, since rust seems to allow this when the outer variable
 is only used in the current scope before being assigned a new value.
 - Function returning reference to a value that is owned by itself.
-- Value is read while a mutable reference exists to it.
-- Value changed while a reference exists to it.
+- Mutable reference is used while another reference exist to same variable.
+- Variable is assigned to while a reference exists to it.
