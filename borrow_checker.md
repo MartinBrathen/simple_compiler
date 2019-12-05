@@ -45,8 +45,10 @@ fn fun() -> i32 {
 
 # Borrowchecking rules
 
-I didn't implement references/borrow checking, but here are the rules that I would use the check for ill formed borrows:
+I didn't implement references/borrow checking, but here are the rules that I would use to check for ill formed borrows:
 - Variable from outer scope is assigned borrow from variable in current scope.
 this rule is probably stricter than the corresponding rule in rust, since rust seems to allow this when the outer variable
 is only used in the current scope before being assigned a new value.
 - Function returning reference to a value that is owned by itself.
+- Value is read while a mutable reference exists to it.
+- Value changed while a reference exists to it.
